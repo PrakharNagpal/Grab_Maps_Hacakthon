@@ -20,7 +20,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Friendship Radius',
+      title: 'Equal Miles',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
         colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF166534)),
@@ -1342,7 +1342,7 @@ class _MapScreenState extends State<MapScreen> {
                             borderRadius: BorderRadius.circular(999),
                           ),
                           child: const Text(
-                            'CITY FAIRNESS LAB',
+                            'Where should we meet?',
                             style: TextStyle(
                               color: Colors.white,
                               fontSize: 11,
@@ -1353,7 +1353,7 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                         const SizedBox(height: 14),
                         Text(
-                          'Friendship Radius',
+                          'Equal Miles',
                           style: theme.textTheme.headlineMedium?.copyWith(
                             color: Colors.white,
                             fontWeight: FontWeight.w900,
@@ -1470,23 +1470,29 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const SizedBox(height: 12),
-                  Wrap(
-                    spacing: 10,
-                    runSpacing: 10,
+                  Column(
                     children: [
-                      for (final friend in _friends)
+                      for (final friend in _friends) ...[
                         _FriendChip(
                           friend: friend,
                           moving: _movingFriendId == friend.id,
                           onMove: () => _startMoveFriend(friend),
                           onRemove: () => _removeFriend(friend),
                         ),
+                        if (friend != _friends.last) const SizedBox(height: 10),
+                      ],
+                      if (_friends.isNotEmpty &&
+                          _friends.length < _friendTemplates.length)
+                        const SizedBox(height: 10),
                       if (_friends.length < _friendTemplates.length)
-                        OutlinedButton.icon(
-                          onPressed: _mapLoaded ? _toggleAddFriendMode : null,
-                          icon: Icon(_isAddingFriend ? Icons.close : Icons.add),
-                          label: Text(
-                            _isAddingFriend ? 'Cancel Add' : 'Add Friend',
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: OutlinedButton.icon(
+                            onPressed: _mapLoaded ? _toggleAddFriendMode : null,
+                            icon: Icon(_isAddingFriend ? Icons.close : Icons.add),
+                            label: Text(
+                              _isAddingFriend ? 'Cancel Add' : 'Add Friend',
+                            ),
                           ),
                         ),
                     ],
@@ -1987,20 +1993,22 @@ class _StatusBadge extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final color = ok ? const Color(0xFF166534) : const Color(0xFF92400E);
-    final bg = ok ? const Color(0xFFDCFCE7) : const Color(0xFFFEF3C7);
+    final bg = ok ? const Color(0xFFF0FDF4) : const Color(0xFFFFFBEB);
     return Container(
-      constraints: const BoxConstraints(minWidth: 200),
-      padding: const EdgeInsets.all(12),
+      constraints: const BoxConstraints(minWidth: 120, maxWidth: 180),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
       decoration: BoxDecoration(
         color: bg,
-        borderRadius: BorderRadius.circular(18),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: ok ? const Color(0xFFDCFCE7) : const Color(0xFFFDE68A),
+        ),
       ),
-      child: Row(
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Container(
-            width: 58,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             decoration: BoxDecoration(
               color: Colors.white.withValues(alpha: 0.75),
               borderRadius: BorderRadius.circular(999),
@@ -2010,15 +2018,19 @@ class _StatusBadge extends StatelessWidget {
               style: TextStyle(
                 color: color,
                 fontWeight: FontWeight.w800,
+                fontSize: 11,
               ),
-              textAlign: TextAlign.center,
             ),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.only(top: 4),
-              child: Text(value),
+          const SizedBox(height: 6),
+          Text(
+            value,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(
+              fontSize: 11,
+              height: 1.25,
+              color: Color(0xFF64748B),
             ),
           ),
         ],
@@ -2319,6 +2331,7 @@ class _FriendChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
+      width: double.infinity,
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
         color: moving ? const Color(0xFFECFCCB) : const Color(0xFFF8FAFC),
@@ -2329,7 +2342,6 @@ class _FriendChip extends StatelessWidget {
         ),
       ),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
           CircleAvatar(
             radius: 14,
@@ -2344,8 +2356,7 @@ class _FriendChip extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 10),
-          ConstrainedBox(
-            constraints: const BoxConstraints(maxWidth: 190),
+          Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               mainAxisSize: MainAxisSize.min,
