@@ -14,6 +14,7 @@ class GrabMapsClient {
   final String _apiKey;
   final http.Client _httpClient;
   final String baseUrl;
+  final Map<String, _CachedGrabResponse> _cache = <String, _CachedGrabResponse>{};
 
   Future<Map<String, dynamic>> nearbyPlaces({
     required double lat,
@@ -116,6 +117,21 @@ class GrabMapsClient {
     final rebuilt = Uri.parse(
       '$baseUrl$path${queryParts.isEmpty ? '' : '?${queryParts.join('&')}'}',
     );
+    final cacheKey = rebuilt.toString();
+    final now = DateTime.now();
+    final cached = _cache[cacheKey];
+    if (cached != null && cached.expiresAt.isAfter(now)) {
+      _logGrabRequest(
+        path: path,
+        query: query,
+        repeatedParams: repeatedParams,
+        statusCode: 200,
+        durationMs: 0,
+        responseBody: cached.body,
+        cacheHit: true,
+      );
+      return _cloneJsonMap(cached.body);
+    }
     try {
       final response = await _httpClient.get(
         rebuilt,
@@ -151,6 +167,10 @@ class GrabMapsClient {
         );
       }
 
+      _cache[cacheKey] = _CachedGrabResponse(
+        body: _cloneJsonMap(decoded),
+        expiresAt: now.add(_ttlForPath(path)),
+      );
       return decoded;
     } catch (error) {
       if (error is! GrabMapsException) {
@@ -185,6 +205,7 @@ class GrabMapsClient {
     int? statusCode,
     dynamic responseBody,
     Object? error,
+    bool cacheHit = false,
   }) {
     final logLine = <String, dynamic>{
       'source': 'grab_maps',
@@ -194,6 +215,7 @@ class GrabMapsClient {
       'statusCode': statusCode,
       'durationMs': durationMs,
       'ok': statusCode != null && statusCode >= 200 && statusCode < 300,
+      'cacheHit': cacheHit,
       'query': query,
       if (repeatedParams.isNotEmpty) 'repeatedParams': repeatedParams,
       if (error != null) 'error': error.toString(),
@@ -203,6 +225,22 @@ class GrabMapsClient {
     stdout.writeln(jsonEncode(logLine));
   }
 
+  Duration _ttlForPath(String path) {
+    if (path.contains('/direction')) {
+      return const Duration(seconds: 20);
+    }
+    if (path.contains('/nearby') || path.contains('/search')) {
+      return const Duration(seconds: 45);
+    }
+    return const Duration(minutes: 2);
+  }
+
+  Map<String, dynamic> _cloneJsonMap(Map<String, dynamic> input) {
+    return Map<String, dynamic>.from(
+      jsonDecode(jsonEncode(input)) as Map<String, dynamic>,
+    );
+  }
+
   dynamic _truncateForLog(dynamic value) {
     final encoded = jsonEncode(value);
     if (encoded.length <= 800) {
@@ -210,6 +248,16 @@ class GrabMapsClient {
     }
     return '${encoded.substring(0, 800)}...';
   }
+}
+
+class _CachedGrabResponse {
+  _CachedGrabResponse({
+    required this.body,
+    required this.expiresAt,
+  });
+
+  final Map<String, dynamic> body;
+  final DateTime expiresAt;
 }
 
 class GrabMapsException implements Exception {

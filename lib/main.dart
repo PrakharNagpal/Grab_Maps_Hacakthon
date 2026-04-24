@@ -60,6 +60,7 @@ class _MapScreenState extends State<MapScreen> {
   bool _proxyHasKey = false;
   bool _isAddingFriend = false;
   bool _isRunningSearch = false;
+  bool _isComparingCategories = false;
   bool _didBootstrap = false;
   int _selectedResultIndex = 0;
   int _searchTickerToken = 0;
@@ -70,6 +71,8 @@ class _MapScreenState extends State<MapScreen> {
   String _searchStage = _searchPhases.first;
   String _selectedCategory = 'bar';
   String _selectedProfile = 'driving';
+  String? _movingFriendId;
+  final List<_CategoryComparisonResult> _categoryComparisons = [];
 
   static const _friendTemplates = <_FriendTemplate>[
     _FriendTemplate(label: 'A', color: '#EF4444'),
@@ -264,7 +267,7 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _handleCustomMapClick(html.Event event) {
-    if (!_isAddingFriend) {
+    if (!_isAddingFriend && _movingFriendId == null) {
       return;
     }
 
@@ -282,6 +285,11 @@ class _MapScreenState extends State<MapScreen> {
     final lat = _readJsDouble(payload, 'lat');
     final lng = _readJsDouble(payload, 'lng');
     if (lat == null || lng == null) {
+      return;
+    }
+
+    if (_movingFriendId != null) {
+      _moveFriendFromMap(lat, lng);
       return;
     }
 
@@ -305,6 +313,7 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       _friends.add(friend);
       _isAddingFriend = false;
+      _categoryComparisons.clear();
       _meetupStatus =
           'Added friend ${friend.label}. Adjust filters or tap `Find Fairest Spot`.';
     });
@@ -325,6 +334,7 @@ class _MapScreenState extends State<MapScreen> {
     final next = !_isAddingFriend;
     setState(() {
       _isAddingFriend = next;
+      _movingFriendId = null;
       _meetupStatus = next
           ? 'Click anywhere on the map to place friend ${_nextFriendTemplate()?.label ?? ''}.'
           : 'Friend placement canceled.';
@@ -332,10 +342,52 @@ class _MapScreenState extends State<MapScreen> {
     _mapBridge.setClickToPlace(next);
   }
 
+  void _startMoveFriend(_FriendLocation friend) {
+    setState(() {
+      _isAddingFriend = false;
+      _movingFriendId = friend.id;
+      _meetupStatus =
+          'Click anywhere on the map to move friend ${friend.label}.';
+    });
+    _mapBridge.setClickToPlace(true);
+  }
+
+  Future<void> _moveFriendFromMap(double lat, double lng) async {
+    final friend = _friendById(_movingFriendId ?? '');
+    if (friend == null) {
+      return;
+    }
+
+    setState(() {
+      friend.lat = lat;
+      friend.lng = lng;
+      friend.address = null;
+      _movingFriendId = null;
+      _results.clear();
+      _centerComparison = null;
+      _categoryComparisons.clear();
+      _selectedResultIndex = 0;
+      _meetupStatus =
+          'Moved friend ${friend.label}. Tap `Find Fairest Spot` to rerank venues.';
+    });
+
+    _mapBridge.setClickToPlace(false);
+    _mapBridge.clearResults();
+    _syncFriendMarkers();
+    await _resolveFriendAddress(friend);
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   void _removeFriend(_FriendLocation friend) {
     setState(() {
       _friends.removeWhere((item) => item.id == friend.id);
       _results.clear();
+      _categoryComparisons.clear();
+      if (_movingFriendId == friend.id) {
+        _movingFriendId = null;
+      }
       _selectedResultIndex = 0;
       _meetupStatus =
           'Removed friend ${friend.label}. Add another friend or search again.';
@@ -442,6 +494,93 @@ class _MapScreenState extends State<MapScreen> {
         _centerComparison = null;
         _searchStage = _searchPhases.first;
         _meetupStatus = 'Meetup search failed: $error';
+      });
+    }
+  }
+
+  Future<void> _compareCategories() async {
+    if (_friends.length < 2) {
+      setState(() {
+        _meetupStatus = 'Add at least 2 friends before comparing categories.';
+      });
+      return;
+    }
+    if (!_proxyHealthy || !_proxyHasKey) {
+      setState(() {
+        _meetupStatus =
+            'Start the proxy with a valid key before comparing categories.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isComparingCategories = true;
+      _meetupStatus = 'Comparing the best meetup option across categories...';
+    });
+
+    try {
+      final responses = await Future.wait(
+        _categoryOptions.map((option) async {
+          final response = await _api.rankMeetup(
+            friends: _friends
+                .map((friend) => {
+                      'id': friend.id,
+                      'lat': friend.lat,
+                      'lng': friend.lng,
+                    })
+                .toList(),
+            keyword: option.keyword,
+            radiusKm: 3,
+            candidateLimit: 6,
+            profile: _selectedProfile,
+          );
+          final results = _parseMeetingResults(response);
+          if (results.isEmpty) {
+            return null;
+          }
+          return _CategoryComparisonResult(
+            categoryLabel: option.label,
+            categoryKeyword: option.keyword,
+            winner: results.first,
+          );
+        }),
+      );
+
+      final comparisons = responses.whereType<_CategoryComparisonResult>().toList()
+        ..sort(
+          (a, b) => a.winner.unfairnessSeconds.compareTo(
+            b.winner.unfairnessSeconds,
+          ),
+        );
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isComparingCategories = false;
+        _categoryComparisons
+          ..clear()
+          ..addAll(comparisons);
+        _meetupStatus = comparisons.isEmpty
+            ? 'No category comparison winners were found nearby.'
+            : '${comparisons.first.categoryLabel} is currently the fairest vibe for this group.';
+      });
+    } on DioException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isComparingCategories = false;
+        _meetupStatus = 'Category comparison failed: ${_describeDioError(error)}';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isComparingCategories = false;
+        _meetupStatus = 'Category comparison failed: $error';
       });
     }
   }
@@ -631,6 +770,7 @@ class _MapScreenState extends State<MapScreen> {
       _selectedCategory = keyword;
       _results.clear();
       _centerComparison = null;
+      _categoryComparisons.clear();
       _selectedResultIndex = 0;
       _meetupStatus =
           'Category set to $keyword. Tap `Find Fairest Spot` to rerank venues.';
@@ -646,6 +786,7 @@ class _MapScreenState extends State<MapScreen> {
       _selectedProfile = value;
       _results.clear();
       _centerComparison = null;
+      _categoryComparisons.clear();
       _selectedResultIndex = 0;
       _meetupStatus =
           'Travel mode set to $value. Tap `Find Fairest Spot` to rerank routes.';
@@ -842,6 +983,8 @@ class _MapScreenState extends State<MapScreen> {
                       for (final friend in _friends)
                         _FriendChip(
                           friend: friend,
+                          moving: _movingFriendId == friend.id,
+                          onMove: () => _startMoveFriend(friend),
                           onRemove: () => _removeFriend(friend),
                         ),
                       if (_friends.length < _friendTemplates.length)
@@ -854,10 +997,12 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                     ],
                   ),
-                  if (_isAddingFriend) ...[
+                  if (_isAddingFriend || _movingFriendId != null) ...[
                     const SizedBox(height: 10),
                     Text(
-                      'Click on the map to place friend ${_nextFriendTemplate()?.label ?? ''}.',
+                      _movingFriendId != null
+                          ? 'Click on the map to move friend ${_friendById(_movingFriendId!)?.label ?? ''}.'
+                          : 'Click on the map to place friend ${_nextFriendTemplate()?.label ?? ''}.',
                       style: Theme.of(context).textTheme.bodyMedium?.copyWith(
                             color: const Color(0xFF166534),
                             fontWeight: FontWeight.w600,
@@ -921,6 +1066,27 @@ class _MapScreenState extends State<MapScreen> {
                       ),
                     ),
                   ),
+                  const SizedBox(height: 10),
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _isComparingCategories || _isRunningSearch
+                          ? null
+                          : _compareCategories,
+                      icon: _isComparingCategories
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.tune),
+                      label: Text(
+                        _isComparingCategories
+                            ? 'Comparing Categories...'
+                            : 'Compare Categories',
+                      ),
+                    ),
+                  ),
                   if (_isRunningSearch) ...[
                     const SizedBox(height: 16),
                     _SearchProgressCard(
@@ -946,6 +1112,29 @@ class _MapScreenState extends State<MapScreen> {
                         formatMinutes: _formatMinutes,
                       ),
                     ],
+                    const SizedBox(height: 20),
+                  ],
+                  if (_categoryComparisons.isNotEmpty) ...[
+                    _SectionHeader(
+                      title: 'Best Vibe Match',
+                      subtitle:
+                          'Compare the fairest winner across categories for this exact group.',
+                    ),
+                    const SizedBox(height: 12),
+                    _CategoryComparisonCard(
+                      comparisons: _categoryComparisons,
+                      formatMinutes: _formatMinutes,
+                      onSelect: (comparison) {
+                        _applyCategory(comparison.categoryKeyword);
+                        setState(() {
+                          _results
+                            ..clear()
+                            ..add(comparison.winner);
+                          _selectedResultIndex = 0;
+                        });
+                        _renderSelectedResult();
+                      },
+                    ),
                     const SizedBox(height: 20),
                   ],
                   _SectionHeader(
@@ -1017,8 +1206,8 @@ class _FriendLocation {
   final String id;
   final String label;
   final String color;
-  final double lat;
-  final double lng;
+  double lat;
+  double lng;
   String? address;
 }
 
@@ -1092,6 +1281,18 @@ class _CenterComparison {
   final double avgDurationSeconds;
   final double unfairnessSecondsSaved;
   final double maxTripSecondsSaved;
+}
+
+class _CategoryComparisonResult {
+  const _CategoryComparisonResult({
+    required this.categoryLabel,
+    required this.categoryKeyword,
+    required this.winner,
+  });
+
+  final String categoryLabel;
+  final String categoryKeyword;
+  final _MeetingResult winner;
 }
 
 class _ResultRoute {
@@ -1369,10 +1570,14 @@ class _SearchStageRow extends StatelessWidget {
 class _FriendChip extends StatelessWidget {
   const _FriendChip({
     required this.friend,
+    required this.moving,
+    required this.onMove,
     required this.onRemove,
   });
 
   final _FriendLocation friend;
+  final bool moving;
+  final VoidCallback onMove;
   final VoidCallback onRemove;
 
   @override
@@ -1380,9 +1585,12 @@ class _FriendChip extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFF8FAFC),
+        color: moving ? const Color(0xFFECFCCB) : const Color(0xFFF8FAFC),
         borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: const Color(0xFFE5E7EB)),
+        border: Border.all(
+          color: moving ? const Color(0xFF65A30D) : const Color(0xFFE5E7EB),
+          width: moving ? 2 : 1,
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1422,6 +1630,12 @@ class _FriendChip extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 8),
+          IconButton(
+            onPressed: onMove,
+            icon: const Icon(Icons.open_with),
+            tooltip: 'Move friend',
+            visualDensity: VisualDensity.compact,
+          ),
           IconButton(
             onPressed: onRemove,
             icon: const Icon(Icons.close),
@@ -2041,6 +2255,141 @@ class _RouteSummaryRow extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+class _CategoryComparisonCard extends StatelessWidget {
+  const _CategoryComparisonCard({
+    required this.comparisons,
+    required this.formatMinutes,
+    required this.onSelect,
+  });
+
+  final List<_CategoryComparisonResult> comparisons;
+  final String Function(double?) formatMinutes;
+  final void Function(_CategoryComparisonResult comparison) onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final best = comparisons.first;
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(22),
+        border: Border.all(color: const Color(0xFFE2E8F0)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            'Best overall vibe right now: ${best.categoryLabel}',
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '${best.winner.name} wins with a ${formatMinutes(best.winner.unfairnessSeconds)} min fairness gap.',
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF64748B),
+                ),
+          ),
+          const SizedBox(height: 14),
+          Column(
+            children: [
+              for (final comparison in comparisons.take(5)) ...[
+                InkWell(
+                  onTap: () => onSelect(comparison),
+                  borderRadius: BorderRadius.circular(18),
+                  child: Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: comparison == best
+                          ? const Color(0xFFECFCCB)
+                          : Colors.white,
+                      borderRadius: BorderRadius.circular(18),
+                      border: Border.all(
+                        color: comparison == best
+                            ? const Color(0xFF84CC16)
+                            : const Color(0xFFE5E7EB),
+                      ),
+                    ),
+                    child: Row(
+                      children: [
+                        Container(
+                          width: 34,
+                          height: 34,
+                          decoration: BoxDecoration(
+                            color: comparison == best
+                                ? const Color(0xFF65A30D)
+                                : const Color(0xFFCBD5E1),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          alignment: Alignment.center,
+                          child: Text(
+                            '${comparisons.indexOf(comparison) + 1}',
+                            style: TextStyle(
+                              color: comparison == best
+                                  ? Colors.white
+                                  : const Color(0xFF0F172A),
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Expanded(
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(
+                                comparison.categoryLabel,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const SizedBox(height: 2),
+                              Text(
+                                comparison.winner.name,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: const TextStyle(
+                                  color: Color(0xFF64748B),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(width: 12),
+                        Column(
+                          crossAxisAlignment: CrossAxisAlignment.end,
+                          children: [
+                            Text(
+                              '${formatMinutes(comparison.winner.unfairnessSeconds)} min spread',
+                              style: const TextStyle(fontWeight: FontWeight.w800),
+                            ),
+                            Text(
+                              '${formatMinutes(comparison.winner.maxDurationSeconds)} min max',
+                              style: const TextStyle(
+                                color: Color(0xFF64748B),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (comparison != comparisons.take(5).last)
+                  const SizedBox(height: 10),
+              ],
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

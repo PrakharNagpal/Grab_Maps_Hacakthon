@@ -242,27 +242,39 @@ class MeetupService {
   }) async {
     final routes = await Future.wait(
       friends.map((friend) async {
-        final direction = await _client.getDirections(
-          points: [
-            (lat: friend.lat, lng: friend.lng),
-            (lat: lat, lng: lng),
-          ],
-          profile: profile,
-          overview: 'full',
-        );
-        final routes = (direction['routes'] as List?) ?? const [];
-        final route = routes.isEmpty ? null : routes.first;
-        final routeMap = route is Map
-            ? Map<String, dynamic>.from(route.cast<String, dynamic>())
-            : <String, dynamic>{};
-        return {
-          'friendId': friend.id,
-          'origin': {'lat': friend.lat, 'lng': friend.lng},
-          'durationSeconds': (routeMap['duration'] as num?)?.toDouble(),
-          'distanceMeters': (routeMap['distance'] as num?)?.toDouble(),
-          'geometry': routeMap['geometry'],
-          'legs': routeMap['legs'],
-        };
+        try {
+          final direction = await _client.getDirections(
+            points: [
+              (lat: friend.lat, lng: friend.lng),
+              (lat: lat, lng: lng),
+            ],
+            profile: profile,
+            overview: 'full',
+          );
+          final routes = (direction['routes'] as List?) ?? const [];
+          final route = routes.isEmpty ? null : routes.first;
+          final routeMap = route is Map
+              ? Map<String, dynamic>.from(route.cast<String, dynamic>())
+              : <String, dynamic>{};
+          return {
+            'friendId': friend.id,
+            'origin': {'lat': friend.lat, 'lng': friend.lng},
+            'durationSeconds': (routeMap['duration'] as num?)?.toDouble(),
+            'distanceMeters': (routeMap['distance'] as num?)?.toDouble(),
+            'geometry': routeMap['geometry'],
+            'legs': routeMap['legs'],
+          };
+        } on GrabMapsException catch (error) {
+          return {
+            'friendId': friend.id,
+            'origin': {'lat': friend.lat, 'lng': friend.lng},
+            'durationSeconds': null,
+            'distanceMeters': null,
+            'geometry': null,
+            'legs': null,
+            'routeError': error.message,
+          };
+        }
       }),
     );
 
