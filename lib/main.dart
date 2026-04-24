@@ -902,55 +902,101 @@ class _MapScreenState extends State<MapScreen> {
     final selectedResult = _results.isEmpty
         ? null
         : _results[_selectedResultIndex.clamp(0, _results.length - 1)];
+    final theme = Theme.of(context);
 
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
         child: Align(
-          alignment: Alignment.bottomCenter,
+          alignment: Alignment.centerLeft,
           child: Container(
-            margin: const EdgeInsets.all(20),
-            constraints: const BoxConstraints(maxWidth: 940, maxHeight: 520),
+            margin: const EdgeInsets.fromLTRB(14, 10, 14, 10),
+            constraints: const BoxConstraints(maxWidth: 430),
             decoration: BoxDecoration(
-              color: Colors.white,
-              borderRadius: BorderRadius.circular(24),
+              gradient: const LinearGradient(
+                colors: [Color(0xFFF8FFF9), Color(0xFFF3F8FF)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(30),
+              border: Border.all(
+                color: Colors.white.withValues(alpha: 0.82),
+                width: 1.5,
+              ),
               boxShadow: [
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.18),
-                  blurRadius: 28,
-                  offset: const Offset(0, 10),
+                  color: const Color(0xFF0F172A).withValues(alpha: 0.18),
+                  blurRadius: 38,
+                  offset: const Offset(0, 18),
                 ),
               ],
             ),
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(20),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(30),
               child: Column(
-                mainAxisSize: MainAxisSize.min,
                 children: [
                   Container(
-                    width: 54,
-                    height: 5,
-                    decoration: BoxDecoration(
-                      color: const Color(0xFFD1D5DB),
-                      borderRadius: BorderRadius.circular(999),
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(22, 22, 22, 18),
+                    decoration: const BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: [
+                          Color(0xFF14532D),
+                          Color(0xFF166534),
+                          Color(0xFF115E59),
+                        ],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 10,
+                            vertical: 6,
+                          ),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withValues(alpha: 0.14),
+                            borderRadius: BorderRadius.circular(999),
+                          ),
+                          child: const Text(
+                            'CITY FAIRNESS LAB',
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 11,
+                              fontWeight: FontWeight.w800,
+                              letterSpacing: 0.8,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          'Friendship Radius',
+                          style: theme.textTheme.headlineMedium?.copyWith(
+                            color: Colors.white,
+                            fontWeight: FontWeight.w900,
+                            height: 1.02,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          'A left-rail meetup studio with the map acting as the live stage.',
+                          style: theme.textTheme.bodyLarge?.copyWith(
+                            color: const Color(0xFFD1FAE5),
+                            height: 1.35,
+                          ),
+                        ),
+                      ],
                     ),
                   ),
-                  const SizedBox(height: 18),
-                  Text(
-                    'Friendship Radius',
-                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                          fontWeight: FontWeight.w800,
-                        ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Find the fairest real-world meetup spot for everyone.',
-                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                          color: const Color(0xFF4B5563),
-                        ),
-                    textAlign: TextAlign.center,
-                  ),
-                  const SizedBox(height: 18),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      padding: const EdgeInsets.fromLTRB(20, 18, 20, 20),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
@@ -1174,6 +1220,10 @@ class _MapScreenState extends State<MapScreen> {
                         ],
                       ],
                     ),
+                        ],
+                      ),
+                    ),
+                  ),
                 ],
               ),
             ),

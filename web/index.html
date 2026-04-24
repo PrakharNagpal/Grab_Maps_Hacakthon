@@ -30,13 +30,17 @@
     }
     #flutter-view {
       position: absolute;
-      left: 50%;
-      bottom: 16px;
-      transform: translateX(-50%);
-      width: min(960px, calc(100vw - 24px));
-      height: min(460px, calc(100vh - 32px));
+      top: 0;
+      left: 0;
+      width: min(460px, 34vw);
+      height: 100vh;
       z-index: 2;
       pointer-events: auto;
+    }
+    @media (max-width: 980px) {
+      #flutter-view {
+        width: min(100vw, 520px);
+      }
     }
   </style>
 </head>
