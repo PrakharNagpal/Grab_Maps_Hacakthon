@@ -7,6 +7,69 @@ class MeetupService {
 
   final GrabMapsClient _client;
 
+  static const Map<String, List<String>> _categoryAliases = {
+    'restaurant': [
+      'restaurant',
+      'food',
+      'f&b',
+      'diner',
+      'eatery',
+      'kitchen',
+      'grill',
+      'bistro',
+    ],
+    'cafe': [
+      'cafe',
+      'coffee',
+      'espresso',
+      'latte',
+      'bakery',
+      'tea',
+      'dessert',
+    ],
+    'bar': [
+      'bar',
+      'pub',
+      'cocktail',
+      'brew',
+      'taproom',
+      'speakeasy',
+      'wine',
+      'beer',
+    ],
+    'hawker': [
+      'hawker',
+      'food court',
+      'kopitiam',
+      'canteen',
+      'foodhub',
+    ],
+    'mall': [
+      'mall',
+      'shopping',
+      'plaza',
+      'centre',
+      'center',
+      'retail',
+      'department store',
+    ],
+  };
+
+  static const List<String> _residentialTerms = [
+    'residential',
+    'residence',
+    'apartment',
+    'apartments',
+    'condominium',
+    'condo',
+    'housing',
+    'hdb',
+    'block ',
+    'tower ',
+    'villa',
+    'estate',
+  ];
+
   Future<Map<String, dynamic>> rankMeetup({
     required List<Map<String, dynamic>> friends,
     String? keyword,
@@ -33,12 +96,15 @@ class MeetupService {
         )
         .toList(growable: false);
 
+    final normalizedKeyword = keyword?.trim().toLowerCase();
+    final searchLimit = math.max(candidateLimit * 3, candidateLimit + 8);
+
     final centroid = _computeCentroid(normalizedFriends);
     final nearbyResponse = await _client.nearbyPlaces(
       lat: centroid.lat,
       lng: centroid.lng,
       radiusKm: radiusKm,
-      limit: candidateLimit,
+      limit: searchLimit,
       rankBy: rankBy,
       language: language,
     );
@@ -46,19 +112,21 @@ class MeetupService {
     final candidates = ((nearbyResponse['places'] as List?) ?? const [])
         .whereType<Map>()
         .map((place) => Map<String, dynamic>.from(place.cast<String, dynamic>()))
+        .where(_isUsefulVenueCandidate)
         .toList();
 
-    if (keyword != null && keyword.trim().isNotEmpty) {
+    if (normalizedKeyword != null && normalizedKeyword.isNotEmpty) {
       final searchResponse = await _client.searchPlaces(
-        keyword: keyword.trim(),
+        keyword: normalizedKeyword,
         country: country,
         lat: centroid.lat,
         lng: centroid.lng,
-        limit: candidateLimit,
+        limit: searchLimit,
       );
       final searchCandidates = (searchResponse['places'] as List? ?? const [])
           .whereType<Map>()
           .map((place) => Map<String, dynamic>.from(place.cast<String, dynamic>()))
+          .where(_isUsefulVenueCandidate)
           .where(
             (place) => _withinRadius(
               centroid,
@@ -68,14 +136,21 @@ class MeetupService {
               ),
               radiusKm,
             ),
-          );
+          )
+          .toList();
       candidates.addAll(searchCandidates);
     }
 
-    final deduped = _dedupeCandidates(candidates).take(candidateLimit).toList();
+    final deduped = _dedupeCandidates(candidates).toList();
+    final filteredCandidates = normalizedKeyword == null || normalizedKeyword.isEmpty
+        ? deduped
+        : deduped
+            .where((candidate) => _matchesCategory(candidate, normalizedKeyword))
+            .toList();
+    final rankedCandidates = filteredCandidates.take(candidateLimit).toList();
     final ranked = <Map<String, dynamic>>[];
 
-    for (final candidate in deduped) {
+    for (final candidate in rankedCandidates) {
       final candidateLat = _extractLat(candidate);
       final candidateLng = _extractLng(candidate);
 
@@ -139,7 +214,10 @@ class MeetupService {
     return {
       'centroid': {'lat': centroid.lat, 'lng': centroid.lng},
       'friendCount': normalizedFriends.length,
+      'rawCandidateCount': candidates.length,
+      'filteredCandidateCount': rankedCandidates.length,
       'candidateCount': ranked.length,
+      'appliedKeyword': normalizedKeyword,
       'results': ranked,
       'winner': ranked.isEmpty ? null : ranked.first,
     };
@@ -200,6 +278,65 @@ class MeetupService {
 
   double _cos(double value) => math.cos(value);
 
+  bool _isUsefulVenueCandidate(Map<String, dynamic> place) {
+    final lat = _extractLatOrNull(place);
+    final lng = _extractLngOrNull(place);
+    if (lat == null || lng == null) {
+      return false;
+    }
+
+    final name = (place['name'] ?? '').toString().trim();
+    if (name.isEmpty) {
+      return false;
+    }
+
+    final searchableText = _placeSearchBlob(place);
+    if (searchableText.isEmpty) {
+      return false;
+    }
+
+    for (final term in _residentialTerms) {
+      if (searchableText.contains(term)) {
+        return false;
+      }
+    }
+
+    return true;
+  }
+
+  bool _matchesCategory(Map<String, dynamic> place, String keyword) {
+    final searchableText = _placeSearchBlob(place);
+    if (searchableText.isEmpty) {
+      return false;
+    }
+
+    final aliases = _categoryAliases[keyword] ?? <String>[keyword];
+    return aliases.any(searchableText.contains);
+  }
+
+  String _placeSearchBlob(Map<String, dynamic> place) {
+    final fields = <String>[
+      if (place['name'] != null) place['name'].toString(),
+      if (place['business_type'] != null) place['business_type'].toString(),
+      if (place['category'] != null) place['category'].toString(),
+      if (place['formatted_address'] != null)
+        place['formatted_address'].toString(),
+      if (place['address'] != null) place['address'].toString(),
+    ];
+
+    final categories = place['categories'];
+    if (categories is List) {
+      for (final item in categories.whereType<Map>()) {
+        final name = item['category_name']?.toString();
+        if (name != null && name.isNotEmpty) {
+          fields.add(name);
+        }
+      }
+    }
+
+    return fields.join(' ').toLowerCase();
+  }
+
   int _compareScore(Map<String, dynamic> a, Map<String, dynamic> b) {
     final unfairnessCompare = (a['unfairnessSeconds'] as num)
         .compareTo(b['unfairnessSeconds'] as num);
@@ -224,17 +361,41 @@ double _atan2SquareRoot(double haversine) =>
     math.atan2(math.sqrt(haversine), math.sqrt(1 - haversine));
 
 double _extractLat(Map<String, dynamic> place) {
+  final value = _extractLatOrNull(place);
+  if (value == null) {
+    throw StateError('Place is missing latitude.');
+  }
+  return value;
+}
+
+double? _extractLatOrNull(Map<String, dynamic> place) {
   final location = place['location'];
   if (location is Map && location['latitude'] != null) {
     return (location['latitude'] as num).toDouble();
   }
-  return (place['lat'] as num).toDouble();
+  final value = place['lat'];
+  if (value is num) {
+    return value.toDouble();
+  }
+  return null;
 }
 
 double _extractLng(Map<String, dynamic> place) {
+  final value = _extractLngOrNull(place);
+  if (value == null) {
+    throw StateError('Place is missing longitude.');
+  }
+  return value;
+}
+
+double? _extractLngOrNull(Map<String, dynamic> place) {
   final location = place['location'];
   if (location is Map && location['longitude'] != null) {
     return (location['longitude'] as num).toDouble();
   }
-  return (place['lng'] as num).toDouble();
+  final value = place['lng'];
+  if (value is num) {
+    return value.toDouble();
+  }
+  return null;
 }

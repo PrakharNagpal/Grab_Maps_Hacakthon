@@ -82,6 +82,9 @@ class _MapScreenState extends State<MapScreen> {
 
   static const _profileOptions = <_ProfileOption>[
     _ProfileOption(label: 'Driving', value: 'driving'),
+    _ProfileOption(label: 'Motorcycle', value: 'motorcycle'),
+    _ProfileOption(label: 'Tricycle', value: 'tricycle'),
+    _ProfileOption(label: 'Cycling', value: 'cycling'),
     _ProfileOption(label: 'Walking', value: 'walking'),
   ];
 
@@ -529,6 +532,34 @@ class _MapScreenState extends State<MapScreen> {
     _renderSelectedResult();
   }
 
+  void _applyCategory(String keyword) {
+    if (_selectedCategory == keyword) {
+      return;
+    }
+    setState(() {
+      _selectedCategory = keyword;
+      _results.clear();
+      _selectedResultIndex = 0;
+      _meetupStatus =
+          'Category set to $keyword. Tap `Find Fairest Spot` to rerank venues.';
+    });
+    _mapBridge.clearResults();
+  }
+
+  void _applyProfile(String value) {
+    if (_selectedProfile == value) {
+      return;
+    }
+    setState(() {
+      _selectedProfile = value;
+      _results.clear();
+      _selectedResultIndex = 0;
+      _meetupStatus =
+          'Travel mode set to $value. Tap `Find Fairest Spot` to rerank routes.';
+    });
+    _mapBridge.clearResults();
+  }
+
   void _syncFriendMarkers() {
     final activeIds = _friends.map((friend) => friend.id).toSet();
     for (final staleId in _renderedFriendIds.difference(activeIds).toList()) {
@@ -636,6 +667,10 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final selectedResult = _results.isEmpty
+        ? null
+        : _results[_selectedResultIndex.clamp(0, _results.length - 1)];
+
     return Scaffold(
       backgroundColor: Colors.transparent,
       body: SafeArea(
@@ -755,11 +790,7 @@ class _MapScreenState extends State<MapScreen> {
                           ChoiceChip(
                             label: Text(option.label),
                             selected: _selectedCategory == option.keyword,
-                            onSelected: (_) {
-                              setState(() {
-                                _selectedCategory = option.keyword;
-                              });
-                            },
+                            onSelected: (_) => _applyCategory(option.keyword),
                           ),
                       ],
                     ),
@@ -775,11 +806,7 @@ class _MapScreenState extends State<MapScreen> {
                           ChoiceChip(
                             label: Text(option.label),
                             selected: _selectedProfile == option.value,
-                            onSelected: (_) {
-                              setState(() {
-                                _selectedProfile = option.value;
-                              });
-                            },
+                            onSelected: (_) => _applyProfile(option.value),
                           ),
                       ],
                     ),
@@ -804,6 +831,16 @@ class _MapScreenState extends State<MapScreen> {
                     ),
                   ),
                   const SizedBox(height: 20),
+                  if (selectedResult != null) ...[
+                    _WinnerSpotlight(
+                      result: selectedResult,
+                      rank: _selectedResultIndex + 1,
+                      isTopPick: _selectedResultIndex == 0,
+                      friends: _friends,
+                      formatMinutes: _formatMinutes,
+                    ),
+                    const SizedBox(height: 20),
+                  ],
                   _SectionHeader(
                     title: 'Best Meeting Points',
                     subtitle: _results.isEmpty
@@ -1215,6 +1252,271 @@ class _ResultCard extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _WinnerSpotlight extends StatelessWidget {
+  const _WinnerSpotlight({
+    required this.result,
+    required this.rank,
+    required this.isTopPick,
+    required this.friends,
+    required this.formatMinutes,
+  });
+
+  final _MeetingResult result;
+  final int rank;
+  final bool isTopPick;
+  final List<_FriendLocation> friends;
+  final String Function(double?) formatMinutes;
+
+  @override
+  Widget build(BuildContext context) {
+    final topCopy = isTopPick
+        ? 'This is the fairest compromise for the whole group.'
+        : 'Previewing an alternative meeting point for comparison.';
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        gradient: const LinearGradient(
+          colors: [Color(0xFF14532D), Color(0xFF166534), Color(0xFF15803D)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(24),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.16),
+            blurRadius: 24,
+            offset: const Offset(0, 10),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Colors.white.withValues(alpha: 0.18),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  isTopPick ? 'Top Pick' : 'Alternative #$rank',
+                  style: const TextStyle(
+                    color: Colors.white,
+                    fontWeight: FontWeight.w800,
+                  ),
+                ),
+              ),
+              if (result.businessType != null)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    result.businessType!,
+                    style: const TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Text(
+            result.name,
+            style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w900,
+                ),
+          ),
+          if (result.address != null) ...[
+            const SizedBox(height: 6),
+            Text(
+              result.address!,
+              style: const TextStyle(
+                color: Color(0xFFD1FAE5),
+                height: 1.4,
+              ),
+            ),
+          ],
+          const SizedBox(height: 12),
+          Text(
+            topCopy,
+            style: const TextStyle(
+              color: Color(0xFFECFDF5),
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          const SizedBox(height: 16),
+          Wrap(
+            spacing: 10,
+            runSpacing: 10,
+            children: [
+              _SpotlightMetric(
+                label: 'Fairness Gap',
+                value: '${formatMinutes(result.unfairnessSeconds)} min',
+              ),
+              _SpotlightMetric(
+                label: 'Max Trip',
+                value: '${formatMinutes(result.maxDurationSeconds)} min',
+              ),
+              _SpotlightMetric(
+                label: 'Average Trip',
+                value: '${formatMinutes(result.avgDurationSeconds)} min',
+              ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Column(
+            children: [
+              for (final friend in friends) ...[
+                _SpotlightRouteRow(
+                  friend: friend,
+                  route: result.routes
+                      .where((route) => route.friendId == friend.id)
+                      .firstOrNull,
+                  formatMinutes: formatMinutes,
+                ),
+                if (friend != friends.last) const SizedBox(height: 10),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SpotlightMetric extends StatelessWidget {
+  const _SpotlightMetric({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: const BoxConstraints(minWidth: 140),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: Colors.white.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: Colors.white.withValues(alpha: 0.14)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label,
+            style: const TextStyle(
+              color: Color(0xFFD1FAE5),
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 16,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SpotlightRouteRow extends StatelessWidget {
+  const _SpotlightRouteRow({
+    required this.friend,
+    required this.route,
+    required this.formatMinutes,
+  });
+
+  final _FriendLocation friend;
+  final _ResultRoute? route;
+  final String Function(double?) formatMinutes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: Color(_hexToColor(friend.color)),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            friend.label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Friend ${friend.label}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(height: 4),
+              LinearProgressIndicator(
+                value: ((route?.durationSeconds ?? 0) / 2400).clamp(0.04, 1.0),
+                minHeight: 8,
+                borderRadius: BorderRadius.circular(999),
+                color: Color(_hexToColor(friend.color)),
+                backgroundColor: Colors.white.withValues(alpha: 0.18),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 108,
+          child: Text(
+            '${formatMinutes(route?.durationSeconds)} min\n'
+            '${((route?.distanceMeters ?? 0) / 1000).toStringAsFixed(1)} km',
+            textAlign: TextAlign.right,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w700,
+              height: 1.35,
+            ),
+          ),
+        ),
+      ],
     );
   }
 }
