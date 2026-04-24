@@ -6,6 +6,7 @@ class MeetupService {
   MeetupService(this._client);
 
   final GrabMapsClient _client;
+  static const int _maxGrabSearchLimit = 20;
 
   static const Map<String, List<String>> _categoryAliases = {
     'restaurant': [
@@ -47,9 +48,9 @@ class MeetupService {
     'mall': [
       'mall',
       'shopping',
+      'shopping centre',
+      'shopping center',
       'plaza',
-      'centre',
-      'center',
       'retail',
       'department store',
     ],
@@ -97,7 +98,10 @@ class MeetupService {
         .toList(growable: false);
 
     final normalizedKeyword = keyword?.trim().toLowerCase();
-    final searchLimit = math.max(candidateLimit * 3, candidateLimit + 8);
+    final searchLimit = math.min(
+      _maxGrabSearchLimit,
+      math.max(candidateLimit * 3, candidateLimit + 8),
+    );
 
     final centroid = _computeCentroid(normalizedFriends);
     final nearbyResponse = await _client.nearbyPlaces(
@@ -109,13 +113,26 @@ class MeetupService {
       language: language,
     );
 
-    final candidates = ((nearbyResponse['places'] as List?) ?? const [])
+    final nearbyCandidates = ((nearbyResponse['places'] as List?) ?? const [])
         .whereType<Map>()
         .map((place) => Map<String, dynamic>.from(place.cast<String, dynamic>()))
         .where(_isUsefulVenueCandidate)
         .toList();
 
-    if (normalizedKeyword != null && normalizedKeyword.isNotEmpty) {
+    final filteredNearbyCandidates =
+        normalizedKeyword == null || normalizedKeyword.isEmpty
+            ? nearbyCandidates
+            : nearbyCandidates
+                .where((candidate) => _matchesCategory(candidate, normalizedKeyword))
+                .toList();
+
+    final candidates = <Map<String, dynamic>>[
+      ...filteredNearbyCandidates,
+    ];
+
+    if (normalizedKeyword != null &&
+        normalizedKeyword.isNotEmpty &&
+        filteredNearbyCandidates.length < candidateLimit) {
       final searchResponse = await _client.searchPlaces(
         keyword: normalizedKeyword,
         country: country,
@@ -137,71 +154,45 @@ class MeetupService {
               radiusKm,
             ),
           )
+          .where((place) => _matchesCategory(place, normalizedKeyword))
           .toList();
       candidates.addAll(searchCandidates);
     }
 
     final deduped = _dedupeCandidates(candidates).toList();
-    final filteredCandidates = normalizedKeyword == null || normalizedKeyword.isEmpty
-        ? deduped
-        : deduped
-            .where((candidate) => _matchesCategory(candidate, normalizedKeyword))
-            .toList();
-    final rankedCandidates = filteredCandidates.take(candidateLimit).toList();
+    final rankedCandidates = deduped.take(candidateLimit).toList();
     final ranked = <Map<String, dynamic>>[];
+    final geographicCenterComparison = await _scorePoint(
+      friends: normalizedFriends,
+      lat: centroid.lat,
+      lng: centroid.lng,
+      profile: profile,
+    );
 
     for (final candidate in rankedCandidates) {
       final candidateLat = _extractLat(candidate);
       final candidateLng = _extractLng(candidate);
-
-      final routes = await Future.wait(
-        normalizedFriends.map((friend) async {
-          final direction = await _client.getDirections(
-            points: [
-              (lat: friend.lat, lng: friend.lng),
-              (lat: candidateLat, lng: candidateLng),
-            ],
-            profile: profile,
-            overview: 'full',
-          );
-          final routes = (direction['routes'] as List?) ?? const [];
-          final route = routes.isEmpty ? null : routes.first;
-          final routeMap = route is Map
-              ? Map<String, dynamic>.from(route.cast<String, dynamic>())
-              : <String, dynamic>{};
-          return {
-            'friendId': friend.id,
-            'origin': {'lat': friend.lat, 'lng': friend.lng},
-            'durationSeconds': (routeMap['duration'] as num?)?.toDouble(),
-            'distanceMeters': (routeMap['distance'] as num?)?.toDouble(),
-            'geometry': routeMap['geometry'],
-            'legs': routeMap['legs'],
-          };
-        }),
+      final scoredCandidate = await _scorePoint(
+        friends: normalizedFriends,
+        lat: candidateLat,
+        lng: candidateLng,
+        profile: profile,
       );
-
-      final durations = routes
-          .map((route) => route['durationSeconds'])
-          .whereType<double>()
-          .toList(growable: false);
-      if (durations.length != normalizedFriends.length) {
+      if (scoredCandidate == null) {
         continue;
       }
-
-      final minDuration = durations.reduce((a, b) => a < b ? a : b);
-      final maxDuration = durations.reduce((a, b) => a > b ? a : b);
-      final totalDuration = durations.fold<double>(0, (sum, item) => sum + item);
 
       ranked.add({
         'place': candidate,
         'score': {
-          'unfairnessSeconds': maxDuration - minDuration,
-          'maxDurationSeconds': maxDuration,
-          'minDurationSeconds': minDuration,
-          'totalDurationSeconds': totalDuration,
-          'averageDurationSeconds': totalDuration / durations.length,
+          ...(scoredCandidate['score'] as Map<String, dynamic>),
+          'centroidDistanceMeters': _distanceKm(
+                centroid,
+                (lat: candidateLat, lng: candidateLng),
+              ) *
+              1000,
         },
-        'routes': routes,
+        'routes': scoredCandidate['routes'],
       });
     }
 
@@ -214,12 +205,105 @@ class MeetupService {
     return {
       'centroid': {'lat': centroid.lat, 'lng': centroid.lng},
       'friendCount': normalizedFriends.length,
-      'rawCandidateCount': candidates.length,
-      'filteredCandidateCount': rankedCandidates.length,
+      'rawCandidateCount': nearbyCandidates.length,
+      'filteredCandidateCount': deduped.length,
       'candidateCount': ranked.length,
       'appliedKeyword': normalizedKeyword,
+      'geographicCenterComparison': geographicCenterComparison == null
+          ? null
+          : {
+              'location': {'lat': centroid.lat, 'lng': centroid.lng},
+              'label': 'Geographic Center',
+              'description': 'Naive midpoint before venue ranking',
+              'score': geographicCenterComparison['score'],
+              'routes': geographicCenterComparison['routes'],
+              'winnerDelta': ranked.isEmpty
+                  ? null
+                  : _buildWinnerDelta(
+                      winnerScore: Map<String, dynamic>.from(
+                        (ranked.first['score'] as Map).cast<String, dynamic>(),
+                      ),
+                      centerScore: Map<String, dynamic>.from(
+                        (geographicCenterComparison['score'] as Map)
+                            .cast<String, dynamic>(),
+                      ),
+                    ),
+            },
       'results': ranked,
       'winner': ranked.isEmpty ? null : ranked.first,
+    };
+  }
+
+  Future<Map<String, dynamic>?> _scorePoint({
+    required List<({String id, double lat, double lng})> friends,
+    required double lat,
+    required double lng,
+    required String profile,
+  }) async {
+    final routes = await Future.wait(
+      friends.map((friend) async {
+        final direction = await _client.getDirections(
+          points: [
+            (lat: friend.lat, lng: friend.lng),
+            (lat: lat, lng: lng),
+          ],
+          profile: profile,
+          overview: 'full',
+        );
+        final routes = (direction['routes'] as List?) ?? const [];
+        final route = routes.isEmpty ? null : routes.first;
+        final routeMap = route is Map
+            ? Map<String, dynamic>.from(route.cast<String, dynamic>())
+            : <String, dynamic>{};
+        return {
+          'friendId': friend.id,
+          'origin': {'lat': friend.lat, 'lng': friend.lng},
+          'durationSeconds': (routeMap['duration'] as num?)?.toDouble(),
+          'distanceMeters': (routeMap['distance'] as num?)?.toDouble(),
+          'geometry': routeMap['geometry'],
+          'legs': routeMap['legs'],
+        };
+      }),
+    );
+
+    final durations = routes
+        .map((route) => route['durationSeconds'])
+        .whereType<double>()
+        .toList(growable: false);
+    if (durations.length != friends.length) {
+      return null;
+    }
+
+    final minDuration = durations.reduce((a, b) => a < b ? a : b);
+    final maxDuration = durations.reduce((a, b) => a > b ? a : b);
+    final totalDuration = durations.fold<double>(0, (sum, item) => sum + item);
+
+    return {
+      'score': {
+        'unfairnessSeconds': maxDuration - minDuration,
+        'maxDurationSeconds': maxDuration,
+        'minDurationSeconds': minDuration,
+        'totalDurationSeconds': totalDuration,
+        'averageDurationSeconds': totalDuration / durations.length,
+      },
+      'routes': routes,
+    };
+  }
+
+  Map<String, dynamic> _buildWinnerDelta({
+    required Map<String, dynamic> winnerScore,
+    required Map<String, dynamic> centerScore,
+  }) {
+    final winnerUnfairness =
+        (winnerScore['unfairnessSeconds'] as num?)?.toDouble() ?? 0;
+    final winnerMax = (winnerScore['maxDurationSeconds'] as num?)?.toDouble() ?? 0;
+    final centerUnfairness =
+        (centerScore['unfairnessSeconds'] as num?)?.toDouble() ?? 0;
+    final centerMax = (centerScore['maxDurationSeconds'] as num?)?.toDouble() ?? 0;
+
+    return {
+      'unfairnessSecondsSaved': centerUnfairness - winnerUnfairness,
+      'maxTripSecondsSaved': centerMax - winnerMax,
     };
   }
 
@@ -348,6 +432,12 @@ class MeetupService {
         .compareTo(b['maxDurationSeconds'] as num);
     if (maxDurationCompare != 0) {
       return maxDurationCompare;
+    }
+
+    final centroidDistanceCompare = (a['centroidDistanceMeters'] as num? ?? 0)
+        .compareTo(b['centroidDistanceMeters'] as num? ?? 0);
+    if (centroidDistanceCompare != 0) {
+      return centroidDistanceCompare;
     }
 
     return (a['totalDurationSeconds'] as num)

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:http/http.dart' as http;
 
@@ -99,6 +100,7 @@ class GrabMapsClient {
     Map<String, String> query, {
     Map<String, List<String>> repeatedParams = const {},
   }) async {
+    final stopwatch = Stopwatch()..start();
     final queryParts = <String>[
       for (final entry in query.entries)
         '${Uri.encodeQueryComponent(entry.key)}=${Uri.encodeQueryComponent(entry.value)}',
@@ -114,29 +116,99 @@ class GrabMapsClient {
     final rebuilt = Uri.parse(
       '$baseUrl$path${queryParts.isEmpty ? '' : '?${queryParts.join('&')}'}',
     );
-    final response = await _httpClient.get(
-      rebuilt,
-      headers: {'Authorization': 'Bearer $_apiKey'},
-    );
-
-    final decoded = jsonDecode(response.body);
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw GrabMapsException(
-        statusCode: response.statusCode,
-        message: 'Grab Maps request failed',
-        body: decoded is Map<String, dynamic> ? decoded : {'raw': decoded},
+    try {
+      final response = await _httpClient.get(
+        rebuilt,
+        headers: {'Authorization': 'Bearer $_apiKey'},
       );
-    }
-
-    if (decoded is! Map<String, dynamic>) {
-      throw GrabMapsException(
+      final decoded = _decodeResponseBody(response.body);
+      _logGrabRequest(
+        path: path,
+        query: query,
+        repeatedParams: repeatedParams,
         statusCode: response.statusCode,
-        message: 'Grab Maps returned an unexpected payload',
-        body: {'raw': decoded},
+        durationMs: stopwatch.elapsedMilliseconds,
+        responseBody: decoded,
       );
-    }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw GrabMapsException(
+          statusCode: response.statusCode,
+          message: 'Grab Maps request failed for $path',
+          body: {
+            'path': path,
+            'query': query,
+            if (repeatedParams.isNotEmpty) 'repeatedParams': repeatedParams,
+            if (decoded is Map<String, dynamic>) ...decoded else 'raw': decoded,
+          },
+        );
+      }
 
-    return decoded;
+      if (decoded is! Map<String, dynamic>) {
+        throw GrabMapsException(
+          statusCode: response.statusCode,
+          message: 'Grab Maps returned an unexpected payload',
+          body: {'raw': decoded},
+        );
+      }
+
+      return decoded;
+    } catch (error) {
+      if (error is! GrabMapsException) {
+        _logGrabRequest(
+          path: path,
+          query: query,
+          repeatedParams: repeatedParams,
+          durationMs: stopwatch.elapsedMilliseconds,
+          error: error,
+        );
+      }
+      rethrow;
+    }
+  }
+
+  dynamic _decodeResponseBody(String body) {
+    if (body.isEmpty) {
+      return <String, dynamic>{};
+    }
+    try {
+      return jsonDecode(body);
+    } catch (_) {
+      return body;
+    }
+  }
+
+  void _logGrabRequest({
+    required String path,
+    required Map<String, String> query,
+    required Map<String, List<String>> repeatedParams,
+    required int durationMs,
+    int? statusCode,
+    dynamic responseBody,
+    Object? error,
+  }) {
+    final logLine = <String, dynamic>{
+      'source': 'grab_maps',
+      'timestamp': DateTime.now().toIso8601String(),
+      'method': 'GET',
+      'path': path,
+      'statusCode': statusCode,
+      'durationMs': durationMs,
+      'ok': statusCode != null && statusCode >= 200 && statusCode < 300,
+      'query': query,
+      if (repeatedParams.isNotEmpty) 'repeatedParams': repeatedParams,
+      if (error != null) 'error': error.toString(),
+      if (statusCode != null && statusCode >= 400)
+        'responseBody': _truncateForLog(responseBody),
+    };
+    stdout.writeln(jsonEncode(logLine));
+  }
+
+  dynamic _truncateForLog(dynamic value) {
+    final encoded = jsonEncode(value);
+    if (encoded.length <= 800) {
+      return value;
+    }
+    return '${encoded.substring(0, 800)}...';
   }
 }
 
