@@ -1,17 +1,53 @@
-# grab_maps
+# Friendship Radius
 
-A new Flutter project.
+Friendship Radius finds fair meetup points by comparing travel times from each
+friend to candidate places around a shared centroid.
 
-## Getting Started
+## Apps
 
-This project is a starting point for a Flutter application.
+- Flutter web client lives in this repo root.
+- Shelf proxy lives in [server/pubspec.yaml](/Users/prakhar/Desktop/Grab/grab_maps/server/pubspec.yaml:1).
 
-A few resources to get you started if this is your first Flutter project:
+## Run The Proxy
 
-- [Learn Flutter](https://docs.flutter.dev/get-started/learn-flutter)
-- [Write your first Flutter app](https://docs.flutter.dev/get-started/codelab)
-- [Flutter learning resources](https://docs.flutter.dev/reference/learning-resources)
+From [server/bin/server.dart](/Users/prakhar/Desktop/Grab/grab_maps/server/bin/server.dart:1):
 
-For help getting started with Flutter development, view the
-[online documentation](https://docs.flutter.dev/), which offers tutorials,
-samples, guidance on mobile development, and a full API reference.
+```bash
+cd server
+GRAB_MAPS_API_KEY=bm_your_key_here dart pub get
+GRAB_MAPS_API_KEY=bm_your_key_here dart run bin/server.dart
+```
+
+The server starts on `http://0.0.0.0:8080` by default.
+
+## Proxy Endpoints
+
+- `GET /health`
+- `POST /api/reverse-geocode`
+- `POST /api/places/nearby`
+- `POST /api/places/search`
+- `POST /api/routes/direction`
+- `POST /api/meetup/rank`
+
+Example request:
+
+```json
+{
+  "friends": [
+    { "id": "A", "lat": 1.2834, "lng": 103.8607 },
+    { "id": "B", "lat": 1.3009, "lng": 103.8394 },
+    { "id": "C", "lat": 1.3521, "lng": 103.8198 }
+  ],
+  "keyword": "bar",
+  "radiusKm": 2,
+  "candidateLimit": 6,
+  "profile": "driving"
+}
+```
+
+## Checkpoint Verification
+
+1. Run the Shelf proxy and open `http://localhost:8080/health`.
+2. Run `flutter build web` from the repo root.
+3. Once both pass, wire the frontend to call the proxy instead of direct Grab
+   endpoints.

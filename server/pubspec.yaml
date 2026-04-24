@@ -1,0 +1,16 @@
+name: friendship_radius_server
+description: Shelf proxy and meetup ranking service for Friendship Radius.
+version: 0.1.0
+publish_to: none
+
+environment:
+  sdk: ^3.3.0
+
+dependencies:
+  http: ^1.2.1
+  shelf: ^1.4.2
+  shelf_router: ^1.1.4
+
+dev_dependencies:
+  lints: ^5.1.1
+  test: ^1.25.8
