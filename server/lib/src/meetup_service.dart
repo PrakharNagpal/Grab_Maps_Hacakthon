@@ -7,6 +7,7 @@ class MeetupService {
 
   final GrabMapsClient _client;
   static const int _maxGrabSearchLimit = 20;
+  static const double _walkingCandidateRadiusKm = 4.0;
 
   static const Map<String, List<String>> _categoryAliases = {
     'restaurant': [
@@ -102,12 +103,15 @@ class MeetupService {
       _maxGrabSearchLimit,
       math.max(candidateLimit * 3, candidateLimit + 8),
     );
+    final effectiveRadiusKm = profile == 'walking'
+        ? math.min(radiusKm, _walkingCandidateRadiusKm)
+        : radiusKm;
 
     final centroid = _computeCentroid(normalizedFriends);
     final nearbyResponse = await _client.nearbyPlaces(
       lat: centroid.lat,
       lng: centroid.lng,
-      radiusKm: radiusKm,
+      radiusKm: effectiveRadiusKm,
       limit: searchLimit,
       rankBy: rankBy,
       language: language,
@@ -151,7 +155,7 @@ class MeetupService {
                 lat: _extractLat(place),
                 lng: _extractLng(place),
               ),
-              radiusKm,
+              effectiveRadiusKm,
             ),
           )
           .where((place) => _matchesCategory(place, normalizedKeyword))
@@ -199,11 +203,12 @@ class MeetupService {
     ranked.sort((a, b) {
       final aScore = Map<String, dynamic>.from(a['score'] as Map);
       final bScore = Map<String, dynamic>.from(b['score'] as Map);
-      return _compareScore(aScore, bScore);
+      return _compareScore(aScore, bScore, profile: profile);
     });
 
     return {
       'centroid': {'lat': centroid.lat, 'lng': centroid.lng},
+      'searchRadiusKm': effectiveRadiusKm,
       'friendCount': normalizedFriends.length,
       'rawCandidateCount': nearbyCandidates.length,
       'filteredCandidateCount': deduped.length,
@@ -433,27 +438,54 @@ class MeetupService {
     return fields.join(' ').toLowerCase();
   }
 
-  int _compareScore(Map<String, dynamic> a, Map<String, dynamic> b) {
-    final unfairnessCompare = (a['unfairnessSeconds'] as num)
-        .compareTo(b['unfairnessSeconds'] as num);
+  int _compareScore(
+    Map<String, dynamic> a,
+    Map<String, dynamic> b, {
+    required String profile,
+  }) {
+    final aUnfairness = (a['unfairnessSeconds'] as num?)?.toDouble() ?? 0;
+    final bUnfairness = (b['unfairnessSeconds'] as num?)?.toDouble() ?? 0;
+    final aMaxDuration = (a['maxDurationSeconds'] as num?)?.toDouble() ?? 0;
+    final bMaxDuration = (b['maxDurationSeconds'] as num?)?.toDouble() ?? 0;
+    final aAvgDuration = (a['averageDurationSeconds'] as num?)?.toDouble() ?? 0;
+    final bAvgDuration = (b['averageDurationSeconds'] as num?)?.toDouble() ?? 0;
+    final aCentroidDistance =
+        (a['centroidDistanceMeters'] as num?)?.toDouble() ?? 0;
+    final bCentroidDistance =
+        (b['centroidDistanceMeters'] as num?)?.toDouble() ?? 0;
+
+    final distanceWeight = profile == 'walking' ? 1 / 18 : 1 / 42;
+    final aBlendedScore = aUnfairness +
+        (aMaxDuration * 0.22) +
+        (aAvgDuration * 0.08) +
+        (aCentroidDistance * distanceWeight);
+    final bBlendedScore = bUnfairness +
+        (bMaxDuration * 0.22) +
+        (bAvgDuration * 0.08) +
+        (bCentroidDistance * distanceWeight);
+
+    final blendedCompare = aBlendedScore.compareTo(bBlendedScore);
+    if (blendedCompare != 0) {
+      return blendedCompare;
+    }
+
+    final unfairnessCompare = aUnfairness.compareTo(bUnfairness);
     if (unfairnessCompare != 0) {
       return unfairnessCompare;
     }
 
-    final maxDurationCompare = (a['maxDurationSeconds'] as num)
-        .compareTo(b['maxDurationSeconds'] as num);
+    final maxDurationCompare = aMaxDuration.compareTo(bMaxDuration);
     if (maxDurationCompare != 0) {
       return maxDurationCompare;
     }
 
-    final centroidDistanceCompare = (a['centroidDistanceMeters'] as num? ?? 0)
-        .compareTo(b['centroidDistanceMeters'] as num? ?? 0);
+    final centroidDistanceCompare = aCentroidDistance.compareTo(bCentroidDistance);
     if (centroidDistanceCompare != 0) {
       return centroidDistanceCompare;
     }
 
-    return (a['totalDurationSeconds'] as num)
-        .compareTo(b['totalDurationSeconds'] as num);
+    return ((a['totalDurationSeconds'] as num?)?.toDouble() ?? 0)
+        .compareTo((b['totalDurationSeconds'] as num?)?.toDouble() ?? 0);
   }
 }
 

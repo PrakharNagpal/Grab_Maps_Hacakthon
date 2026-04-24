@@ -44,6 +44,27 @@ class FriendshipRadiusApi {
     return response.data ?? const <String, dynamic>{};
   }
 
+  Future<Map<String, dynamic>> searchPlaces({
+    required String keyword,
+    String? country,
+    double? lat,
+    double? lng,
+    int limit = 6,
+  }) async {
+    final response = await _dio.post<Map<String, dynamic>>(
+      '/api/places/search',
+      data: {
+        'keyword': keyword,
+        if (country != null && country.trim().isNotEmpty)
+          'country': country.trim(),
+        if (lat != null && lng != null) 'lat': lat,
+        if (lat != null && lng != null) 'lng': lng,
+        'limit': limit,
+      },
+    );
+    return response.data ?? const <String, dynamic>{};
+  }
+
   Future<Map<String, dynamic>> rankMeetup({
     required List<Map<String, dynamic>> friends,
     String? keyword,

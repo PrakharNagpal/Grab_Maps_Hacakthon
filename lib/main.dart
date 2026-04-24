@@ -47,11 +47,13 @@ class _MapScreenState extends State<MapScreen> {
 
   final _mapBridge = MapBridge();
   final _api = FriendshipRadiusApi();
+  final _friendSearchController = TextEditingController();
 
   final List<_FriendLocation> _friends = [];
   final List<_MeetingResult> _results = [];
   final Set<String> _renderedFriendIds = <String>{};
   _CenterComparison? _centerComparison;
+  final List<_LocationSearchCandidate> _friendSearchResults = [];
 
   html.EventListener? _mapClickListener;
 
@@ -61,6 +63,7 @@ class _MapScreenState extends State<MapScreen> {
   bool _isAddingFriend = false;
   bool _isRunningSearch = false;
   bool _isComparingCategories = false;
+  bool _isSearchingFriendLocation = false;
   bool _didBootstrap = false;
   int _selectedResultIndex = 0;
   int _searchTickerToken = 0;
@@ -114,6 +117,7 @@ class _MapScreenState extends State<MapScreen> {
 
   @override
   void dispose() {
+    _friendSearchController.dispose();
     if (_mapClickListener != null) {
       html.window.removeEventListener('grabmaps-click', _mapClickListener);
     }
@@ -314,6 +318,8 @@ class _MapScreenState extends State<MapScreen> {
       _friends.add(friend);
       _isAddingFriend = false;
       _categoryComparisons.clear();
+      _friendSearchResults.clear();
+      _friendSearchController.clear();
       _meetupStatus =
           'Added friend ${friend.label}. Adjust filters or tap `Find Fairest Spot`.';
     });
@@ -335,6 +341,9 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       _isAddingFriend = next;
       _movingFriendId = null;
+      if (next) {
+        _friendSearchResults.clear();
+      }
       _meetupStatus = next
           ? 'Click anywhere on the map to place friend ${_nextFriendTemplate()?.label ?? ''}.'
           : 'Friend placement canceled.';
@@ -346,6 +355,7 @@ class _MapScreenState extends State<MapScreen> {
     setState(() {
       _isAddingFriend = false;
       _movingFriendId = friend.id;
+      _friendSearchResults.clear();
       _meetupStatus =
           'Click anywhere on the map to move friend ${friend.label}.';
     });
@@ -366,6 +376,8 @@ class _MapScreenState extends State<MapScreen> {
       _results.clear();
       _centerComparison = null;
       _categoryComparisons.clear();
+      _friendSearchResults.clear();
+      _friendSearchController.clear();
       _selectedResultIndex = 0;
       _meetupStatus =
           'Moved friend ${friend.label}. Tap `Find Fairest Spot` to rerank venues.';
@@ -385,6 +397,7 @@ class _MapScreenState extends State<MapScreen> {
       _friends.removeWhere((item) => item.id == friend.id);
       _results.clear();
       _categoryComparisons.clear();
+      _friendSearchResults.clear();
       if (_movingFriendId == friend.id) {
         _movingFriendId = null;
       }
@@ -396,6 +409,129 @@ class _MapScreenState extends State<MapScreen> {
     _renderedFriendIds.remove(friend.id);
     _mapBridge.clearResults();
     _syncFriendMarkers();
+  }
+
+  Future<void> _searchFriendLocations() async {
+    final query = _friendSearchController.text.trim();
+    if (query.isEmpty) {
+      setState(() {
+        _friendSearchResults.clear();
+        _meetupStatus = 'Type a place name, building, or address to search.';
+      });
+      return;
+    }
+    if (!_proxyHealthy || !_proxyHasKey) {
+      setState(() {
+        _meetupStatus =
+            'Start the proxy with a valid key before searching places.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isSearchingFriendLocation = true;
+      _friendSearchResults.clear();
+      _meetupStatus = 'Searching for "$query"...';
+    });
+
+    try {
+      final anchor = _friends.isEmpty ? null : _friends.first;
+      final response = await _api.searchPlaces(
+        keyword: query,
+        country: anchor == null ? 'SGP' : null,
+        lat: anchor?.lat,
+        lng: anchor?.lng,
+        limit: 6,
+      );
+      final places = (response['places'] as List?) ?? const [];
+      final results = places.whereType<Map>().map((place) {
+        final map = Map<String, dynamic>.from(place.cast<String, dynamic>());
+        return _LocationSearchCandidate(
+          name: (map['name'] ?? 'Unknown place').toString(),
+          subtitle: (map['formatted_address'] ??
+                  map['address'] ??
+                  map['business_type'] ??
+                  map['category'])
+              ?.toString(),
+          lat: _placeLat(map),
+          lng: _placeLng(map),
+        );
+      }).where((place) => place.lat != 0 || place.lng != 0).toList();
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSearchingFriendLocation = false;
+        _friendSearchResults
+          ..clear()
+          ..addAll(results);
+        _meetupStatus = results.isEmpty
+            ? 'No matching places found. Try a more specific search.'
+            : 'Tap a result to add it as a friend location.';
+      });
+    } on DioException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isSearchingFriendLocation = false;
+        _meetupStatus = 'Place search failed: ${_describeDioError(error)}';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isSearchingFriendLocation = false;
+        _meetupStatus = 'Place search failed: $error';
+      });
+    }
+  }
+
+  Future<void> _selectFriendSearchResult(_LocationSearchCandidate candidate) async {
+    if (_movingFriendId != null) {
+      await _moveFriendFromMap(candidate.lat, candidate.lng);
+      return;
+    }
+
+    if (_friends.length >= _friendTemplates.length) {
+      setState(() {
+        _meetupStatus = 'You already have the maximum of 5 friends.';
+      });
+      return;
+    }
+
+    final template = _nextFriendTemplate();
+    if (template == null) {
+      return;
+    }
+
+    final friend = _FriendLocation(
+      id: 'friend_${template.label.toLowerCase()}',
+      label: template.label,
+      color: template.color,
+      lat: candidate.lat,
+      lng: candidate.lng,
+    )..address = candidate.subtitle ?? candidate.name;
+
+    setState(() {
+      _friends.add(friend);
+      _isAddingFriend = false;
+      _friendSearchResults.clear();
+      _friendSearchController.clear();
+      _categoryComparisons.clear();
+      _meetupStatus =
+          'Added friend ${friend.label} from search. Adjust filters or tap `Find Fairest Spot`.';
+    });
+
+    _mapBridge.setClickToPlace(false);
+    _syncFriendMarkers();
+    await _resolveFriendAddress(friend);
+    if (mounted) {
+      setState(() {});
+    }
   }
 
   Future<void> _findFairestSpot() async {
@@ -645,6 +781,8 @@ class _MapScreenState extends State<MapScreen> {
             (score['minDurationSeconds'] as num?)?.toDouble() ?? 0,
         avgDurationSeconds:
             (score['averageDurationSeconds'] as num?)?.toDouble() ?? 0,
+        centroidDistanceMeters:
+            (score['centroidDistanceMeters'] as num?)?.toDouble() ?? 0,
         routes: routes,
       );
     }).toList();
@@ -903,6 +1041,19 @@ class _MapScreenState extends State<MapScreen> {
         ? null
         : _results[_selectedResultIndex.clamp(0, _results.length - 1)];
     final theme = Theme.of(context);
+    final fairestPoiId = _results.isEmpty ? null : _results.first.poiId;
+    final fastestPoiId = _results.isEmpty
+        ? null
+        : _results
+            .reduce((a, b) => a.avgDurationSeconds <= b.avgDurationSeconds ? a : b)
+            .poiId;
+    final closestPoiId = _results.isEmpty
+        ? null
+        : _results
+            .reduce(
+              (a, b) => a.centroidDistanceMeters <= b.centroidDistanceMeters ? a : b,
+            )
+            .poiId;
 
     return Scaffold(
       backgroundColor: Colors.transparent,
@@ -1020,6 +1171,74 @@ class _MapScreenState extends State<MapScreen> {
                     title: 'Friends',
                     subtitle:
                         'Use the seeded friends or add more by clicking the map. Minimum 2, maximum 5.',
+                  ),
+                  const SizedBox(height: 12),
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.78),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
+                    ),
+                    child: Column(
+                      children: [
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _friendSearchController,
+                                textInputAction: TextInputAction.search,
+                                onSubmitted: (_) => _searchFriendLocations(),
+                                decoration: InputDecoration(
+                                  hintText: _movingFriendId != null
+                                      ? 'Search a new place for friend ${_friendById(_movingFriendId!)?.label ?? ''}'
+                                      : 'Search a friend location by place or address',
+                                  prefixIcon: const Icon(Icons.search),
+                                  filled: true,
+                                  fillColor: const Color(0xFFF8FAFC),
+                                  isDense: true,
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            FilledButton(
+                              onPressed: _isSearchingFriendLocation
+                                  ? null
+                                  : _searchFriendLocations,
+                              child: _isSearchingFriendLocation
+                                  ? const SizedBox(
+                                      width: 16,
+                                      height: 16,
+                                      child: CircularProgressIndicator(
+                                        strokeWidth: 2,
+                                        color: Colors.white,
+                                      ),
+                                    )
+                                  : const Text('Search'),
+                            ),
+                          ],
+                        ),
+                        if (_friendSearchResults.isNotEmpty) ...[
+                          const SizedBox(height: 12),
+                          Column(
+                            children: [
+                              for (final place in _friendSearchResults.take(4)) ...[
+                                _FriendSearchResultTile(
+                                  candidate: place,
+                                  onTap: () => _selectFriendSearchResult(place),
+                                ),
+                                if (place != _friendSearchResults.take(4).last)
+                                  const SizedBox(height: 8),
+                              ],
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Wrap(
@@ -1184,10 +1403,10 @@ class _MapScreenState extends State<MapScreen> {
                     const SizedBox(height: 20),
                   ],
                   _SectionHeader(
-                    title: 'Best Meeting Points',
+                    title: 'Fairest Meeting Points',
                     subtitle: _results.isEmpty
                         ? 'Run a search to rank the fairest venues.'
-                        : 'Tap a result to focus it on the map and redraw all routes.',
+                        : 'Badges show which option is fairest, fastest, or closest to the group.',
                   ),
                   const SizedBox(height: 12),
                   if (_results.isEmpty)
@@ -1212,6 +1431,9 @@ class _MapScreenState extends State<MapScreen> {
                             rank: i + 1,
                             selected: i == _selectedResultIndex,
                             friends: _friends,
+                            isFairest: _results[i].poiId == fairestPoiId,
+                            isFastest: _results[i].poiId == fastestPoiId,
+                            isClosest: _results[i].poiId == closestPoiId,
                             onTap: () => _selectResult(i),
                             formatMinutes: _formatMinutes,
                           ),
@@ -1291,6 +1513,7 @@ class _MeetingResult {
     required this.maxDurationSeconds,
     required this.minDurationSeconds,
     required this.avgDurationSeconds,
+    required this.centroidDistanceMeters,
     required this.routes,
     this.address,
     this.businessType,
@@ -1306,6 +1529,7 @@ class _MeetingResult {
   final double maxDurationSeconds;
   final double minDurationSeconds;
   final double avgDurationSeconds;
+  final double centroidDistanceMeters;
   final List<_ResultRoute> routes;
 }
 
@@ -1343,6 +1567,20 @@ class _CategoryComparisonResult {
   final String categoryLabel;
   final String categoryKeyword;
   final _MeetingResult winner;
+}
+
+class _LocationSearchCandidate {
+  const _LocationSearchCandidate({
+    required this.name,
+    required this.lat,
+    required this.lng,
+    this.subtitle,
+  });
+
+  final String name;
+  final String? subtitle;
+  final double lat;
+  final double lng;
 }
 
 class _ResultRoute {
@@ -1617,6 +1855,78 @@ class _SearchStageRow extends StatelessWidget {
   }
 }
 
+class _FriendSearchResultTile extends StatelessWidget {
+  const _FriendSearchResultTile({
+    required this.candidate,
+    required this.onTap,
+  });
+
+  final _LocationSearchCandidate candidate;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFF8FAFC),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: const Color(0xFFE2E8F0)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                color: const Color(0xFFDCFCE7),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(
+                Icons.place_rounded,
+                color: Color(0xFF166534),
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    candidate.name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(fontWeight: FontWeight.w800),
+                  ),
+                  if (candidate.subtitle != null) ...[
+                    const SizedBox(height: 2),
+                    Text(
+                      candidate.subtitle!,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Color(0xFF64748B),
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            const Icon(Icons.arrow_forward_ios_rounded, size: 15),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 class _FriendChip extends StatelessWidget {
   const _FriendChip({
     required this.friend,
@@ -1698,12 +2008,46 @@ class _FriendChip extends StatelessWidget {
   }
 }
 
+class _ResultBadge extends StatelessWidget {
+  const _ResultBadge({
+    required this.label,
+    required this.background,
+    required this.foreground,
+  });
+
+  final String label;
+  final Color background;
+  final Color foreground;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(999),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(
+          color: foreground,
+          fontSize: 12,
+          fontWeight: FontWeight.w800,
+        ),
+      ),
+    );
+  }
+}
+
 class _ResultCard extends StatelessWidget {
   const _ResultCard({
     required this.result,
     required this.rank,
     required this.selected,
     required this.friends,
+    required this.isFairest,
+    required this.isFastest,
+    required this.isClosest,
     required this.onTap,
     required this.formatMinutes,
   });
@@ -1712,6 +2056,9 @@ class _ResultCard extends StatelessWidget {
   final int rank;
   final bool selected;
   final List<_FriendLocation> friends;
+  final bool isFairest;
+  final bool isFastest;
+  final bool isClosest;
   final VoidCallback onTap;
   final String Function(double?) formatMinutes;
 
@@ -1760,6 +2107,32 @@ class _ResultCard extends StatelessWidget {
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
+                      Wrap(
+                        spacing: 6,
+                        runSpacing: 6,
+                        children: [
+                          if (isFairest)
+                            const _ResultBadge(
+                              label: 'Fairest',
+                              background: Color(0xFFDCFCE7),
+                              foreground: Color(0xFF166534),
+                            ),
+                          if (isFastest)
+                            const _ResultBadge(
+                              label: 'Fastest',
+                              background: Color(0xFFDBEAFE),
+                              foreground: Color(0xFF1D4ED8),
+                            ),
+                          if (isClosest)
+                            const _ResultBadge(
+                              label: 'Closest',
+                              background: Color(0xFFFEF3C7),
+                              foreground: Color(0xFFB45309),
+                            ),
+                        ],
+                      ),
+                      if (isFairest || isFastest || isClosest)
+                        const SizedBox(height: 8),
                       Text(
                         result.name,
                         style:
