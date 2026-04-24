@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <base href="$FLUTTER_BASE_HREF">
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Friendship Radius</title>
+
+  <link rel="stylesheet"
+    href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css">
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+
+  <style>
+    html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; }
+    #map-container {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 0;
+    }
+    #flutter-view {
+      position: absolute;
+      top: 0; left: 0;
+      width: 100%; height: 100%;
+      z-index: 1;
+      pointer-events: none;
+    }
+    #flutter-view .flutter-clickable {
+      pointer-events: auto;
+    }
+  </style>
+</head>
+<body>
+  <!-- GrabMaps renders here BEHIND Flutter -->
+  <div id="map-container"></div>
+
+  <!-- Flutter renders here ON TOP with transparent background -->
+  <div id="flutter-view"></div>
+
+  <!-- GrabMaps SDK -->
+  <script type="module">
+    try {
+      const GrabMaps = await import(
+        'https://maps.grab.com/developer/assets/js/grabmaps.es.js'
+      );
+      window.GrabMaps = GrabMaps;
+      window.grabSdkReady = true;
+      window.dispatchEvent(new Event('grabmaps-ready'));
+    } catch (error) {
+      window.grabSdkReady = false;
+      window.grabMapError = error?.message || String(error);
+      console.error('GrabMaps SDK failed to load:', error);
+    }
+  </script>
+
+  <!-- Map bridge functions Flutter will call -->
+  <script>
+    // Store references globally so Flutter can access them
+    window.grabMapClient = null;
+    window.grabMap = null;
+    window.mapReady = false;
+    window.grabSdkReady = false;
+    window.grabMapError = '';
+    window.friendPins = [];
+    window.resultPins = [];
+
+    window.initGrabMap = function(apiKey) {
+      try {
+        window.grabMapError = '';
+        if (!window.GrabMaps) {
+          throw new Error('GrabMaps SDK not loaded yet.');
+        }
+        if (!window.maplibregl) {
+          throw new Error('MapLibre GL JS not loaded.');
+        }
+
+        window.grabMapClient = new window.GrabMaps.GrabMapsBuilder()
+          .setBaseUrl('https://maps.grab.com')
+          .setApiKey(apiKey)
+          .build();
+
+        window.grabMap = new window.GrabMaps.MapBuilder(window.grabMapClient)
+          .setContainer('map-container')
+          .setCenter([103.8198, 1.3521])
+          .setZoom(12)
+          .enableNavigation()
+          .enableLabels()
+          .enableBuildings()
+          .enableAttribution()
+          .build();
+
+        window.mapReady = true;
+        console.log('GrabMaps initialized successfully');
+        return true;
+      } catch (e) {
+        window.grabMapError = e?.message || String(e);
+        console.error('GrabMaps init failed:', e);
+        return false;
+      }
+    };
+
+    window.getGrabMapError = function() {
+      return window.grabMapError || '';
+    };
+
+    // Fly to location
+    window.flyToLocation = function(lng, lat, zoom) {
+      if (window.grabMap) {
+        const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+        if (m && m.flyTo) {
+          m.flyTo({ center: [lng, lat], zoom: zoom || 13 });
+        }
+      }
+    };
+
+    // Add a colored marker
+    window.addMarker = function(id, lat, lng, color, label) {
+      if (!window.grabMap) return;
+      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      if (!m) return;
+
+      // Remove existing marker with same id
+      window.removeMarker(id);
+
+      const el = document.createElement('div');
+      el.id = 'marker-' + id;
+      el.style.width = '36px';
+      el.style.height = '36px';
+      el.style.borderRadius = '50%';
+      el.style.backgroundColor = color;
+      el.style.border = '3px solid white';
+      el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+      el.style.display = 'flex';
+      el.style.alignItems = 'center';
+      el.style.justifyContent = 'center';
+      el.style.color = 'white';
+      el.style.fontWeight = 'bold';
+      el.style.fontSize = '14px';
+      el.style.cursor = 'pointer';
+      el.innerText = label || '';
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([lng, lat])
+        .addTo(m);
+
+      window.friendPins.push({ id, marker });
+    };
+
+    // Remove a marker by id
+    window.removeMarker = function(id) {
+      const idx = window.friendPins.findIndex(p => p.id === id);
+      if (idx !== -1) {
+        window.friendPins[idx].marker.remove();
+        window.friendPins.splice(idx, 1);
+      }
+      // Also check result pins
+      const ridx = window.resultPins.findIndex(p => p.id === id);
+      if (ridx !== -1) {
+        window.resultPins[ridx].marker.remove();
+        window.resultPins.splice(ridx, 1);
+      }
+    };
+
+    // Add a result POI marker (smaller, different style)
+    window.addResultMarker = function(id, lat, lng, color, rank) {
+      if (!window.grabMap) return;
+      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      if (!m) return;
+
+      window.removeMarker(id);
+
+      const el = document.createElement('div');
+      el.id = 'marker-' + id;
+      el.style.width = '28px';
+      el.style.height = '28px';
+      el.style.borderRadius = '50%';
+      el.style.backgroundColor = color;
+      el.style.border = '2px solid white';
+      el.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
+      el.style.display = 'flex';
+      el.style.alignItems = 'center';
+      el.style.justifyContent = 'center';
+      el.style.color = 'white';
+      el.style.fontWeight = 'bold';
+      el.style.fontSize = '11px';
+      el.innerText = rank || '';
+
+      const marker = new maplibregl.Marker({ element: el })
+        .setLngLat([lng, lat])
+        .addTo(m);
+
+      window.resultPins.push({ id, marker });
+    };
+
+    // Draw a route line on the map
+    window.drawRouteLine = function(routeId, coordinates, color, width) {
+      if (!window.grabMap) return;
+      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      if (!m) return;
+
+      // Remove existing route with same id
+      if (m.getSource(routeId)) {
+        m.removeLayer(routeId + '-layer');
+        m.removeSource(routeId);
+      }
+
+      m.addSource(routeId, {
+        type: 'geojson',
+        data: {
+          type: 'Feature',
+          geometry: {
+            type: 'LineString',
+            coordinates: coordinates // [[lng, lat], [lng, lat], ...]
+          }
+        }
+      });
+
+      m.addLayer({
+        id: routeId + '-layer',
+        type: 'line',
+        source: routeId,
+        layout: {
+          'line-join': 'round',
+          'line-cap': 'round'
+        },
+        paint: {
+          'line-color': color || '#4ade80',
+          'line-width': width || 4,
+          'line-opacity': 0.8
+        }
+      });
+    };
+
+    // Clear all route lines
+    window.clearRoutes = function() {
+      if (!window.grabMap) return;
+      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      if (!m) return;
+
+      const style = m.getStyle();
+      if (style && style.layers) {
+        style.layers.forEach(layer => {
+          if (layer.id.endsWith('-layer') && layer.type === 'line') {
+            const sourceId = layer.id.replace('-layer', '');
+            m.removeLayer(layer.id);
+            if (m.getSource(sourceId)) m.removeSource(sourceId);
+          }
+        });
+      }
+    };
+
+    // Clear result markers only
+    window.clearResults = function() {
+      window.resultPins.forEach(p => p.marker.remove());
+      window.resultPins = [];
+      window.clearRoutes();
+    };
+
+    // Fit map bounds to show all points
+    window.fitBounds = function(points) {
+      if (!window.grabMap || !points.length) return;
+      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      if (!m) return;
+
+      const bounds = new maplibregl.LngLatBounds();
+      points.forEach(p => bounds.extend([p.lng, p.lat]));
+      m.fitBounds(bounds, { padding: 80, maxZoom: 15 });
+    };
+
+    // Enable click-to-place mode
+    window.enableClickToPlace = false;
+    window.onMapClickCallback = null;
+
+    window.setClickToPlace = function(enabled) {
+      window.enableClickToPlace = enabled;
+    };
+
+    // Set up map click listener (called once after map loads)
+    window.setupClickListener = function() {
+      if (!window.grabMap) return;
+      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      if (!m) return;
+
+      m.on('click', function(e) {
+        if (window.enableClickToPlace) {
+          const lat = e.lngLat.lat;
+          const lng = e.lngLat.lng;
+          // Send to Flutter via a custom event
+          window.parent.postMessage({
+            type: 'mapClick',
+            lat: lat,
+            lng: lng
+          }, '*');
+        }
+      });
+    };
+  </script>
+
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
