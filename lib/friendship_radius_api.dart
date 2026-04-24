@@ -68,7 +68,7 @@ class FriendshipRadiusApi {
   Future<Map<String, dynamic>> rankMeetup({
     required List<Map<String, dynamic>> friends,
     String? keyword,
-    double radiusKm = 2,
+    double? radiusKm,
     int candidateLimit = 6,
     String profile = 'driving',
     String rankBy = 'distance',
@@ -79,7 +79,7 @@ class FriendshipRadiusApi {
         'friends': friends,
         if (keyword != null && keyword.trim().isNotEmpty)
           'keyword': keyword.trim(),
-        'radiusKm': radiusKm,
+        if (radiusKm != null) 'radiusKm': radiusKm,
         'candidateLimit': candidateLimit,
         'profile': profile,
         'rankBy': rankBy,

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 // ignore: avoid_web_libraries_in_flutter
 import 'dart:html' as html;
 
@@ -39,6 +40,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
+  static const bool _showRouteLines = false;
   static const _searchPhases = <String>[
     'Finding real venues near the group',
     'Calculating travel times for each friend',
@@ -48,6 +50,7 @@ class _MapScreenState extends State<MapScreen> {
   final _mapBridge = MapBridge();
   final _api = FriendshipRadiusApi();
   final _friendSearchController = TextEditingController();
+  final _maxDistanceController = TextEditingController(text: '5');
 
   final List<_FriendLocation> _friends = [];
   final List<_MeetingResult> _results = [];
@@ -101,6 +104,72 @@ class _MapScreenState extends State<MapScreen> {
     _ProfileOption(label: 'Walking', value: 'walking'),
   ];
 
+  static const _recommendedFarPlaces = <_RecommendedFarPlace>[
+    _RecommendedFarPlace(
+      name: 'Marina Bay Sands',
+      subtitle: 'Iconic skyline destination',
+      lat: 1.2834,
+      lng: 103.8607,
+      categoryKeywords: ['mall', 'bar', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'Gardens by the Bay',
+      subtitle: 'Waterfront landmark',
+      lat: 1.2816,
+      lng: 103.8636,
+      categoryKeywords: ['cafe', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'Jewel Changi Airport',
+      subtitle: 'Famous shopping and dining hub',
+      lat: 1.3603,
+      lng: 103.9894,
+      categoryKeywords: ['mall', 'cafe', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'Newton Food Centre',
+      subtitle: 'Popular local food spot',
+      lat: 1.3127,
+      lng: 103.8390,
+      categoryKeywords: ['hawker', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'Lau Pa Sat',
+      subtitle: 'Historic hawker destination',
+      lat: 1.2806,
+      lng: 103.8507,
+      categoryKeywords: ['hawker', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'Haji Lane',
+      subtitle: 'Trendy cafe and bar strip',
+      lat: 1.3008,
+      lng: 103.8585,
+      categoryKeywords: ['bar', 'cafe', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'Clarke Quay',
+      subtitle: 'Riverside nightlife cluster',
+      lat: 1.2906,
+      lng: 103.8465,
+      categoryKeywords: ['bar', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'ION Orchard',
+      subtitle: 'Orchard flagship mall',
+      lat: 1.3040,
+      lng: 103.8318,
+      categoryKeywords: ['mall', 'cafe', 'restaurant'],
+    ),
+    _RecommendedFarPlace(
+      name: 'VivoCity',
+      subtitle: 'Large lifestyle mall by the harbour',
+      lat: 1.2644,
+      lng: 103.8223,
+      categoryKeywords: ['mall', 'restaurant', 'cafe'],
+    ),
+  ];
+
   static const _seedFriends = <({double lat, double lng})>[
     (lat: 1.2834, lng: 103.8607),
     (lat: 1.3009, lng: 103.8394),
@@ -118,6 +187,7 @@ class _MapScreenState extends State<MapScreen> {
   @override
   void dispose() {
     _friendSearchController.dispose();
+    _maxDistanceController.dispose();
     if (_mapClickListener != null) {
       html.window.removeEventListener('grabmaps-click', _mapClickListener);
     }
@@ -556,11 +626,23 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
+    final radiusKm = _parsedMaxDistanceKm();
+    if (radiusKm == null) {
+      if (_maxDistanceController.text.trim().isNotEmpty) {
+        setState(() {
+          _meetupStatus =
+              'Enter a valid maximum distance in km before searching.';
+        });
+        return;
+      }
+    }
+
     setState(() {
       _isRunningSearch = true;
       _searchStage = _searchPhases.first;
-      _meetupStatus =
-          'Searching nearby ${_selectedCategory}s and calculating fairness...';
+      _meetupStatus = radiusKm == null
+          ? 'Searching nearby ${_selectedCategory}s with no distance cap and calculating fairness...'
+          : 'Searching nearby ${_selectedCategory}s within ${radiusKm.toStringAsFixed(1)} km and calculating fairness...';
     });
     _startSearchStageTicker();
 
@@ -574,7 +656,7 @@ class _MapScreenState extends State<MapScreen> {
                 })
             .toList(),
         keyword: _selectedCategory,
-        radiusKm: 3,
+        radiusKm: radiusKm,
         candidateLimit: 8,
         profile: _selectedProfile,
       );
@@ -649,9 +731,22 @@ class _MapScreenState extends State<MapScreen> {
       return;
     }
 
+    final radiusKm = _parsedMaxDistanceKm();
+    if (radiusKm == null) {
+      if (_maxDistanceController.text.trim().isNotEmpty) {
+        setState(() {
+          _meetupStatus =
+              'Enter a valid maximum distance in km before comparing categories.';
+        });
+        return;
+      }
+    }
+
     setState(() {
       _isComparingCategories = true;
-      _meetupStatus = 'Comparing the best meetup option across categories...';
+      _meetupStatus = radiusKm == null
+          ? 'Comparing the best meetup option across categories with no distance cap...'
+          : 'Comparing the best meetup option across categories within ${radiusKm.toStringAsFixed(1)} km...';
     });
 
     try {
@@ -666,7 +761,7 @@ class _MapScreenState extends State<MapScreen> {
                     })
                 .toList(),
             keyword: option.keyword,
-            radiusKm: 3,
+            radiusKm: radiusKm,
             candidateLimit: 6,
             profile: _selectedProfile,
           );
@@ -759,7 +854,7 @@ class _MapScreenState extends State<MapScreen> {
           durationSeconds:
               (routeMap['durationSeconds'] as num?)?.toDouble() ?? 0,
           distanceMeters: (routeMap['distanceMeters'] as num?)?.toDouble() ?? 0,
-          geometry: routeMap['geometry']?.toString(),
+          geometry: _geometryToString(routeMap['geometry']),
         );
       }).toList();
 
@@ -836,10 +931,11 @@ class _MapScreenState extends State<MapScreen> {
     final selected = _results[_selectedResultIndex];
     _mapBridge.clearResults();
 
-    for (var i = 0; i < _results.length && i < 3; i++) {
+    for (var i = 0; i < _results.length && i < 5; i++) {
       final candidate = _results[i];
+      final markerId = _mapObjectId('result', candidate.poiId);
       _mapBridge.addResultPin(
-        id: 'result_${candidate.poiId}',
+        id: markerId,
         lat: candidate.lat,
         lng: candidate.lng,
         color: i == _selectedResultIndex ? '#111827' : '#15803D',
@@ -872,14 +968,50 @@ class _MapScreenState extends State<MapScreen> {
       if (friend == null || route.geometry == null || route.geometry!.isEmpty) {
         continue;
       }
-      final coordinates = PolylineCodec.decodePolyline6(route.geometry!);
+      final coordinates = _decodeGeometry(route.geometry!);
+      if (coordinates.isEmpty) continue;
       _mapBridge.drawRoute(
-        routeId: 'route_${result.poiId}_${route.friendId}',
+        routeId: _mapObjectId('route_${route.friendId}', result.poiId),
         coordinates: coordinates,
-        color: friend.color,
-        width: 5,
+        color: _showRouteLines ? friend.color : 'rgba(0,0,0,0)',
+        width: _showRouteLines ? 5 : 0.01,
       );
     }
+  }
+
+  // Decodes geometry that is either a polyline6 string or a GeoJSON LineString.
+  List<List<double>> _decodeGeometry(String geometry) {
+    if (geometry.trimLeft().startsWith('{')) {
+      try {
+        final geoJson = jsonDecode(geometry) as Map<String, dynamic>;
+        final rawCoords = geoJson['coordinates'] as List<dynamic>;
+        return rawCoords.map<List<double>>((c) {
+          final pair = c as List<dynamic>;
+          return [(pair[0] as num).toDouble(), (pair[1] as num).toDouble()];
+        }).toList();
+      } catch (_) {
+        return [];
+      }
+    }
+    return PolylineCodec.decodePolyline6(geometry);
+  }
+
+  // Converts a route geometry value (String or GeoJSON Map) to a string.
+  // Uses jsonEncode for Maps so the JSON structure is preserved, not Dart's toString().
+  static String? _geometryToString(dynamic geometry) {
+    if (geometry == null) return null;
+    if (geometry is String) return geometry.isEmpty ? null : geometry;
+    if (geometry is Map) return jsonEncode(geometry);
+    return null;
+  }
+
+  String _mapObjectId(String prefix, String rawId) {
+    final sanitized = rawId
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z0-9_-]+'), '_')
+        .replaceAll(RegExp(r'_+'), '_')
+        .replaceAll(RegExp(r'^_|_$'), '');
+    return sanitized.isEmpty ? prefix : '${prefix}_$sanitized';
   }
 
   void _focusSelectedResult() {
@@ -930,6 +1062,102 @@ class _MapScreenState extends State<MapScreen> {
           'Travel mode set to $value. Tap `Find Fairest Spot` to rerank routes.';
     });
     _mapBridge.clearResults();
+  }
+
+  double? _parsedMaxDistanceKm() {
+    final raw = _maxDistanceController.text.trim();
+    if (raw.isEmpty) {
+      return null;
+    }
+    final value = double.tryParse(raw);
+    if (value == null || value <= 0) {
+      return null;
+    }
+    return value;
+  }
+
+  bool _isSlightlyFar(_MeetingResult result) {
+    final limitKm = _parsedMaxDistanceKm();
+    if (limitKm == null) {
+      return false;
+    }
+    return result.routes.any((route) => (route.distanceMeters / 1000) > limitKm);
+  }
+
+  List<_RecommendedFarPlace> _recommendedFarPlacesForCurrentSearch() {
+    final limitKm = _parsedMaxDistanceKm();
+    if (limitKm == null || _friends.isEmpty) {
+      return const [];
+    }
+
+    final centroid = (
+      lat: _friends.fold<double>(0, (sum, friend) => sum + friend.lat) /
+          _friends.length,
+      lng: _friends.fold<double>(0, (sum, friend) => sum + friend.lng) /
+          _friends.length,
+    );
+
+    final filtered = _recommendedFarPlaces.where((place) {
+      if (!place.categoryKeywords.contains(_selectedCategory)) {
+        return false;
+      }
+      final distanceKm = _distanceKmBetween(
+        centroidLat: centroid.lat,
+        centroidLng: centroid.lng,
+        targetLat: place.lat,
+        targetLng: place.lng,
+      );
+      return distanceKm > limitKm;
+    }).toList()
+      ..sort((a, b) {
+        final aDistance = _distanceKmBetween(
+          centroidLat: centroid.lat,
+          centroidLng: centroid.lng,
+          targetLat: a.lat,
+          targetLng: a.lng,
+        );
+        final bDistance = _distanceKmBetween(
+          centroidLat: centroid.lat,
+          centroidLng: centroid.lng,
+          targetLat: b.lat,
+          targetLng: b.lng,
+        );
+        return aDistance.compareTo(bDistance);
+      });
+
+    return filtered.take(3).toList(growable: false);
+  }
+
+  double _distanceKmBetween({
+    required double centroidLat,
+    required double centroidLng,
+    required double targetLat,
+    required double targetLng,
+  }) {
+    const earthRadiusKm = 6371.0;
+    final dLat = _toRadians(targetLat - centroidLat);
+    final dLng = _toRadians(targetLng - centroidLng);
+    final lat1 = _toRadians(centroidLat);
+    final lat2 = _toRadians(targetLat);
+    final a = (math.sin(dLat / 2) * math.sin(dLat / 2)) +
+        math.cos(lat1) *
+            math.cos(lat2) *
+            (math.sin(dLng / 2) * math.sin(dLng / 2));
+    final c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a));
+    return earthRadiusKm * c;
+  }
+
+  double _toRadians(double degrees) => degrees * 0.017453292519943295;
+
+  void _focusRecommendedFarPlace(_RecommendedFarPlace place) {
+    _mapBridge.fitBoundsToPoints([
+      ..._friends.map((friend) => (lat: friend.lat, lng: friend.lng)),
+      (lat: place.lat, lng: place.lng),
+    ]);
+    setState(() {
+      _meetupStatus =
+          'Recommended but far: ${place.name}. It is outside your current ${_parsedMaxDistanceKm()?.toStringAsFixed(1) ?? '--'} km radius.';
+    });
   }
 
   void _syncFriendMarkers() {
@@ -1040,6 +1268,7 @@ class _MapScreenState extends State<MapScreen> {
     final selectedResult = _results.isEmpty
         ? null
         : _results[_selectedResultIndex.clamp(0, _results.length - 1)];
+    final recommendedFarPlaces = _recommendedFarPlacesForCurrentSearch();
     final theme = Theme.of(context);
     final fairestPoiId = _results.isEmpty ? null : _results.first.poiId;
     final fastestPoiId = _results.isEmpty
@@ -1278,37 +1507,130 @@ class _MapScreenState extends State<MapScreen> {
                   _SectionHeader(
                     title: 'Filters',
                     subtitle:
-                        'Pick a vibe and travel mode before ranking venues.',
+                        'Pick a vibe, choose a travel mode, and set the maximum distance before ranking venues.',
                   ),
                   const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
-                      children: [
-                        for (final option in _categoryOptions)
-                          ChoiceChip(
-                            label: Text(option.label),
-                            selected: _selectedCategory == option.keyword,
-                            onSelected: (_) => _applyCategory(option.keyword),
-                          ),
-                      ],
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(14),
+                    decoration: BoxDecoration(
+                      color: Colors.white.withValues(alpha: 0.78),
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(color: const Color(0xFFE2E8F0)),
                     ),
-                  ),
-                  const SizedBox(height: 12),
-                  Align(
-                    alignment: Alignment.centerLeft,
-                    child: Wrap(
-                      spacing: 8,
-                      runSpacing: 8,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        for (final option in _profileOptions)
-                          ChoiceChip(
-                            label: Text(option.label),
-                            selected: _selectedProfile == option.value,
-                            onSelected: (_) => _applyProfile(option.value),
+                        Text(
+                          'Venue type',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
                           ),
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final option in _categoryOptions)
+                                ChoiceChip(
+                                  label: Text(option.label),
+                                  selected: _selectedCategory == option.keyword,
+                                  onSelected: (_) =>
+                                      _applyCategory(option.keyword),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          'Travel mode',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 10),
+                        Align(
+                          alignment: Alignment.centerLeft,
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            children: [
+                              for (final option in _profileOptions)
+                                ChoiceChip(
+                                  label: Text(option.label),
+                                  selected: _selectedProfile == option.value,
+                                  onSelected: (_) =>
+                                      _applyProfile(option.value),
+                                ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 14),
+                        Text(
+                          'Maximum distance (km)',
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w800,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: TextField(
+                                controller: _maxDistanceController,
+                                keyboardType: const TextInputType.numberWithOptions(
+                                  decimal: true,
+                                ),
+                                onChanged: (_) {
+                                  setState(() {
+                                    _results.clear();
+                                    _centerComparison = null;
+                                    _categoryComparisons.clear();
+                                    _selectedResultIndex = 0;
+                                  });
+                                  _mapBridge.clearResults();
+                                },
+                                decoration: InputDecoration(
+                                  hintText: 'e.g. 3 or 4',
+                                  filled: true,
+                                  fillColor: const Color(0xFFF8FAFC),
+                                  isDense: true,
+                                  suffixText: 'km',
+                                  border: OutlineInputBorder(
+                                    borderRadius: BorderRadius.circular(16),
+                                    borderSide: BorderSide.none,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 10),
+                            Container(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 12,
+                                vertical: 10,
+                              ),
+                              decoration: BoxDecoration(
+                                color: const Color(0xFFF0FDF4),
+                                borderRadius: BorderRadius.circular(14),
+                                border: Border.all(
+                                  color: const Color(0xFFBBF7D0),
+                                ),
+                              ),
+                              child: Text(
+                                _parsedMaxDistanceKm() == null
+                                    ? 'Optional'
+                                    : '${_parsedMaxDistanceKm()!.toStringAsFixed(1)} km',
+                                style: const TextStyle(
+                                  color: Color(0xFF166534),
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
@@ -1366,6 +1688,7 @@ class _MapScreenState extends State<MapScreen> {
                       rank: _selectedResultIndex + 1,
                       isTopPick: _selectedResultIndex == 0,
                       friends: _friends,
+                      slightlyFar: _isSlightlyFar(selectedResult),
                       onFocus: _focusSelectedResult,
                       formatMinutes: _formatMinutes,
                     ),
@@ -1434,6 +1757,7 @@ class _MapScreenState extends State<MapScreen> {
                             isFairest: _results[i].poiId == fairestPoiId,
                             isFastest: _results[i].poiId == fastestPoiId,
                             isClosest: _results[i].poiId == closestPoiId,
+                            slightlyFar: _isSlightlyFar(_results[i]),
                             onTap: () => _selectResult(i),
                             formatMinutes: _formatMinutes,
                           ),
@@ -1442,6 +1766,42 @@ class _MapScreenState extends State<MapScreen> {
                         ],
                       ],
                     ),
+                  if (recommendedFarPlaces.isNotEmpty) ...[
+                    const SizedBox(height: 20),
+                    _SectionHeader(
+                      title: 'Recommended But Far',
+                      subtitle:
+                          'Well-known places outside your current distance radius, shown as optional stretch picks.',
+                    ),
+                    const SizedBox(height: 12),
+                    Column(
+                      children: [
+                        for (final place in recommendedFarPlaces) ...[
+                          _RecommendedFarPlaceCard(
+                            place: place,
+                            radiusKm: _parsedMaxDistanceKm()!,
+                            distanceKm: _distanceKmBetween(
+                              centroidLat: _friends.fold<double>(
+                                    0,
+                                    (sum, friend) => sum + friend.lat,
+                                  ) /
+                                  _friends.length,
+                              centroidLng: _friends.fold<double>(
+                                    0,
+                                    (sum, friend) => sum + friend.lng,
+                                  ) /
+                                  _friends.length,
+                              targetLat: place.lat,
+                              targetLng: place.lng,
+                            ),
+                            onTap: () => _focusRecommendedFarPlace(place),
+                          ),
+                          if (place != recommendedFarPlaces.last)
+                            const SizedBox(height: 10),
+                        ],
+                      ],
+                    ),
+                  ],
                         ],
                       ),
                     ),
@@ -1595,6 +1955,22 @@ class _ResultRoute {
   final double durationSeconds;
   final double distanceMeters;
   final String? geometry;
+}
+
+class _RecommendedFarPlace {
+  const _RecommendedFarPlace({
+    required this.name,
+    required this.subtitle,
+    required this.lat,
+    required this.lng,
+    required this.categoryKeywords,
+  });
+
+  final String name;
+  final String subtitle;
+  final double lat;
+  final double lng;
+  final List<String> categoryKeywords;
 }
 
 class _StatusBadge extends StatelessWidget {
@@ -2048,6 +2424,7 @@ class _ResultCard extends StatelessWidget {
     required this.isFairest,
     required this.isFastest,
     required this.isClosest,
+    required this.slightlyFar,
     required this.onTap,
     required this.formatMinutes,
   });
@@ -2059,6 +2436,7 @@ class _ResultCard extends StatelessWidget {
   final bool isFairest;
   final bool isFastest;
   final bool isClosest;
+  final bool slightlyFar;
   final VoidCallback onTap;
   final String Function(double?) formatMinutes;
 
@@ -2129,9 +2507,15 @@ class _ResultCard extends StatelessWidget {
                               background: Color(0xFFFEF3C7),
                               foreground: Color(0xFFB45309),
                             ),
+                          if (slightlyFar)
+                            const _ResultBadge(
+                              label: 'Slightly Far',
+                              background: Color(0xFFFFEDD5),
+                              foreground: Color(0xFF9A3412),
+                            ),
                         ],
                       ),
-                      if (isFairest || isFastest || isClosest)
+                      if (isFairest || isFastest || isClosest || slightlyFar)
                         const SizedBox(height: 8),
                       Text(
                         result.name,
@@ -2195,6 +2579,7 @@ class _WinnerSpotlight extends StatelessWidget {
     required this.rank,
     required this.isTopPick,
     required this.friends,
+    required this.slightlyFar,
     required this.onFocus,
     required this.formatMinutes,
   });
@@ -2203,6 +2588,7 @@ class _WinnerSpotlight extends StatelessWidget {
   final int rank;
   final bool isTopPick;
   final List<_FriendLocation> friends;
+  final bool slightlyFar;
   final VoidCallback onFocus;
   final String Function(double?) formatMinutes;
 
@@ -2269,6 +2655,25 @@ class _WinnerSpotlight extends StatelessWidget {
                     ),
                     ),
                   ),
+              if (slightlyFar)
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFDE68A).withValues(alpha: 0.22),
+                    borderRadius: BorderRadius.circular(999),
+                    border: Border.all(
+                      color: const Color(0xFFFDE68A).withValues(alpha: 0.5),
+                    ),
+                  ),
+                  child: const Text(
+                    'Slightly Far',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
             ],
           ),
           const SizedBox(height: 14),
@@ -2812,6 +3217,86 @@ class _CategoryComparisonCard extends StatelessWidget {
             ],
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _RecommendedFarPlaceCard extends StatelessWidget {
+  const _RecommendedFarPlaceCard({
+    required this.place,
+    required this.radiusKm,
+    required this.distanceKm,
+    required this.onTap,
+  });
+
+  final _RecommendedFarPlace place;
+  final double radiusKm;
+  final double distanceKm;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFFBEB),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: const Color(0xFFF59E0B)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              width: 42,
+              height: 42,
+              decoration: BoxDecoration(
+                color: const Color(0xFFF59E0B),
+                borderRadius: BorderRadius.circular(14),
+              ),
+              alignment: Alignment.center,
+              child: const Icon(Icons.star_rounded, color: Colors.white),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const _ResultBadge(
+                    label: 'Recommended But Far',
+                    background: Color(0xFFFFEDD5),
+                    foreground: Color(0xFF9A3412),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    place.name,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    place.subtitle,
+                    style: const TextStyle(color: Color(0xFF78716C)),
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '${distanceKm.toStringAsFixed(1)} km from the group centroid, beyond your ${radiusKm.toStringAsFixed(1)} km radius',
+                    style: const TextStyle(
+                      color: Color(0xFF9A3412),
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 12),
+            const Icon(Icons.center_focus_strong, color: Color(0xFF92400E)),
+          ],
+        ),
       ),
     );
   }

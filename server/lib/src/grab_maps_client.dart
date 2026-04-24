@@ -73,6 +73,7 @@ class GrabMapsClient {
     required List<({double lat, double lng})> points,
     String profile = 'driving',
     String overview = 'full',
+    String geometries = 'polyline6',
     bool latFirst = false,
     int? alternatives,
     List<String>? avoid,
@@ -80,6 +81,7 @@ class GrabMapsClient {
     final query = <String, String>{
       'profile': profile,
       'overview': overview,
+      'geometries': geometries,
       if (latFirst) 'lat_first': 'true',
       if (alternatives != null) 'alternatives': '$alternatives',
       if (avoid != null && avoid.isNotEmpty) 'avoid': avoid.join(','),

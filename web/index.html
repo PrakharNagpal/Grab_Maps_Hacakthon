@@ -299,34 +299,62 @@
     };
 
 
-    window.drawRouteLine = function(routeId, coordinates, color, width) {
+    // Receives coordinates as a JSON string (avoids dart:js_interop nested-array issues).
+    window.drawRouteLineJson = function(routeId, coordsJson, color, width) {
       const m = window.getRawMap();
-      if (!m) return;
-
-      if (m.getSource(routeId)) {
-        m.removeLayer(routeId + '-layer');
-        m.removeSource(routeId);
+      if (!m) {
+        console.warn('drawRouteLineJson: map not ready');
+        return;
       }
 
-      m.addSource(routeId, {
-        type: 'geojson',
-        data: {
-          type: 'Feature',
-          geometry: { type: 'LineString', coordinates }
-        }
-      });
+      let coordinates;
+      try {
+        coordinates = JSON.parse(coordsJson);
+      } catch (e) {
+        console.warn('drawRouteLineJson: failed to parse coordinates JSON', e);
+        return;
+      }
 
-      m.addLayer({
-        id: routeId + '-layer',
-        type: 'line',
-        source: routeId,
-        layout: { 'line-join': 'round', 'line-cap': 'round' },
-        paint: {
-          'line-color': color || '#4ade80',
-          'line-width': width || 4,
-          'line-opacity': 0.8
+      if (!Array.isArray(coordinates) || coordinates.length < 2) {
+        console.warn('drawRouteLineJson: fewer than 2 coordinate pairs', { routeId, count: coordinates?.length });
+        return;
+      }
+
+      console.log('drawRouteLineJson:', routeId,
+        'points:', coordinates.length,
+        'first:', coordinates[0],
+        'last:', coordinates[coordinates.length - 1]);
+
+      try {
+        if (m.getLayer(routeId + '-layer')) {
+          m.removeLayer(routeId + '-layer');
         }
-      });
+        if (m.getSource(routeId)) {
+          m.removeSource(routeId);
+        }
+
+        m.addSource(routeId, {
+          type: 'geojson',
+          data: {
+            type: 'Feature',
+            geometry: { type: 'LineString', coordinates }
+          }
+        });
+
+        m.addLayer({
+          id: routeId + '-layer',
+          type: 'line',
+          source: routeId,
+          layout: { 'line-join': 'round', 'line-cap': 'round' },
+          paint: {
+            'line-color': color || '#4ade80',
+            'line-width': typeof width === 'number' ? width : 4,
+            'line-opacity': 0.8
+          }
+        });
+      } catch (e) {
+        console.error('drawRouteLineJson: MapLibre error', e);
+      }
     };
 
     window.clearRoutes = function() {
@@ -335,7 +363,7 @@
       const style = m.getStyle();
       if (style && style.layers) {
         style.layers.forEach(layer => {
-          if (layer.id.endsWith('-layer') && layer.type === 'line') {
+          if (layer.id.startsWith('route_') && layer.id.endsWith('-layer') && layer.type === 'line') {
             const sourceId = layer.id.replace('-layer', '');
             m.removeLayer(layer.id);
             if (m.getSource(sourceId)) m.removeSource(sourceId);

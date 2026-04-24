@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:js_interop';
 
 // JS function bindings
@@ -9,7 +10,7 @@ external void jsFlyTo(JSNumber lng, JSNumber lat, JSNumber zoom);
 
 @JS('addMarker')
 external void jsAddMarker(
-  JSString id, JSNumber lat, JSNumber lng, 
+  JSString id, JSNumber lat, JSNumber lng,
   JSString color, JSString label,
 );
 
@@ -22,9 +23,10 @@ external void jsAddResultMarker(
   JSString color, JSString rank,
 );
 
-@JS('drawRouteLine')
-external void jsDrawRouteLine(
-  JSString routeId, JSArray<JSArray<JSNumber>> coords,
+// Passes coordinates as a JSON string to avoid dart:js_interop array interop issues.
+@JS('drawRouteLineJson')
+external void jsDrawRouteLineJson(
+  JSString routeId, JSString coordsJson,
   JSString color, JSNumber width,
 );
 
@@ -55,7 +57,6 @@ class MapBridge {
     _initialized = result?.toDart ?? false;
 
     if (_initialized) {
-      // Small delay to let map load, then setup click listener
       Future.delayed(const Duration(seconds: 2), () {
         jsSetupClickListener();
       });
@@ -105,11 +106,9 @@ class MapBridge {
     double width = 4,
   }) {
     if (!_initialized) return;
-    final jsCoords = coordinates
-        .map((c) => [c[0].toJS, c[1].toJS].toJS)
-        .toList()
-        .toJS;
-    jsDrawRouteLine(routeId.toJS, jsCoords, color.toJS, width.toJS);
+    // Serialize as JSON string to avoid dart:js_interop nested-array interop issues.
+    final coordsJson = jsonEncode(coordinates);
+    jsDrawRouteLineJson(routeId.toJS, coordsJson.toJS, color.toJS, width.toJS);
   }
 
   void clearRoutes() {
@@ -129,7 +128,6 @@ class MapBridge {
 
   void fitBoundsToPoints(List<({double lat, double lng})> points) {
     if (!_initialized) return;
-    // Use flyTo to center on centroid as a simpler approach
     if (points.isEmpty) return;
     double avgLat = 0, avgLng = 0;
     for (final p in points) {

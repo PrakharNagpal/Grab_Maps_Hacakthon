@@ -113,7 +113,7 @@ Future<HttpServer> serve({
             .toList(growable: false),
         keyword: _optionalString(payload, 'keyword'),
         country: _optionalString(payload, 'country'),
-        radiusKm: _optionalDouble(payload, 'radiusKm') ?? 2,
+        radiusKm: _optionalDouble(payload, 'radiusKm'),
         candidateLimit: _optionalInt(payload, 'candidateLimit') ?? 8,
         profile: _optionalString(payload, 'profile') ?? 'driving',
         rankBy: _optionalString(payload, 'rankBy') ?? 'distance',

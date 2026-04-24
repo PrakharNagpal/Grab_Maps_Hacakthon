@@ -7,6 +7,7 @@ class MeetupService {
 
   final GrabMapsClient _client;
   static const int _maxGrabSearchLimit = 20;
+  static const double _unboundedSearchRadiusKm = 25.0;
   static const double _walkingCandidateRadiusKm = 4.0;
 
   static const Map<String, List<String>> _categoryAliases = {
@@ -76,7 +77,7 @@ class MeetupService {
     required List<Map<String, dynamic>> friends,
     String? keyword,
     String? country,
-    double radiusKm = 2,
+    double? radiusKm,
     int candidateLimit = 8,
     String profile = 'driving',
     String rankBy = 'distance',
@@ -103,9 +104,10 @@ class MeetupService {
       _maxGrabSearchLimit,
       math.max(candidateLimit * 3, candidateLimit + 8),
     );
+    final requestedRadiusKm = radiusKm ?? _unboundedSearchRadiusKm;
     final effectiveRadiusKm = profile == 'walking'
-        ? math.min(radiusKm, _walkingCandidateRadiusKm)
-        : radiusKm;
+        ? math.min(requestedRadiusKm, _walkingCandidateRadiusKm)
+        : requestedRadiusKm;
 
     final centroid = _computeCentroid(normalizedFriends);
     final nearbyResponse = await _client.nearbyPlaces(
