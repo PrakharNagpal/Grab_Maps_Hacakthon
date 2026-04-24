@@ -18,14 +18,24 @@
       width: 100%; height: 100%;
       z-index: 0;
     }
-    #flutter-view {
+    /* Transparent overlay for click-to-place. Same z-index as map but
+       later in DOM so it paints above the map canvas and below Flutter. */
+    #click-overlay {
       position: absolute;
       top: 0; left: 0;
       width: 100%; height: 100%;
       z-index: 1;
       pointer-events: none;
+      cursor: crosshair;
     }
-    #flutter-view .flutter-clickable {
+    #flutter-view {
+      position: absolute;
+      left: 50%;
+      bottom: 16px;
+      transform: translateX(-50%);
+      width: min(960px, calc(100vw - 24px));
+      height: min(460px, calc(100vh - 32px));
+      z-index: 2;
       pointer-events: auto;
     }
   </style>
@@ -33,6 +43,10 @@
 <body>
   <!-- GrabMaps renders here BEHIND Flutter -->
   <div id="map-container"></div>
+
+  <!-- Transparent overlay that captures clicks when add-friend mode is active.
+       z-index: 0, after map-container in DOM → above map, below Flutter panel. -->
+  <div id="click-overlay"></div>
 
   <!-- Flutter renders here ON TOP with transparent background -->
   <div id="flutter-view"></div>
@@ -55,42 +69,115 @@
 
   <!-- Map bridge functions Flutter will call -->
   <script>
-    // Store references globally so Flutter can access them
     window.grabMapClient = null;
     window.grabMap = null;
+    window.rawMap = null;
     window.mapReady = false;
     window.grabSdkReady = false;
     window.grabMapError = '';
     window.friendPins = [];
     window.resultPins = [];
+    window.enableClickToPlace = false;
+    window.clickOverlayBound = false;
+    window.mapReadyResolvers = [];
+
+    window.getRawMap = function() {
+      return window.rawMap;
+    };
+
+    window.notifyMapReady = function() {
+      window.mapReady = true;
+      window.dispatchEvent(new Event('grabmaps-map-ready'));
+      const resolvers = window.mapReadyResolvers.splice(0);
+      resolvers.forEach(resolve => {
+        try {
+          resolve(window.rawMap);
+        } catch (_) {}
+      });
+    };
+
+    window.waitForMapReady = function() {
+      if (window.rawMap) {
+        return Promise.resolve(window.rawMap);
+      }
+      return new Promise(resolve => {
+        window.mapReadyResolvers.push(resolve);
+      });
+    };
+
+    window.fetchGrabStyle = async function(apiKey) {
+      const response = await fetch('https://maps.grab.com/api/style.json', {
+        headers: {
+          'Authorization': `Bearer ${apiKey}`
+        }
+      });
+
+      if (!response.ok) {
+        throw new Error(`Style fetch failed: ${response.status}`);
+      }
+
+      return response.json();
+    };
 
     window.initGrabMap = function(apiKey) {
       try {
         window.grabMapError = '';
-        if (!window.GrabMaps) {
-          throw new Error('GrabMaps SDK not loaded yet.');
-        }
         if (!window.maplibregl) {
           throw new Error('MapLibre GL JS not loaded.');
         }
 
-        window.grabMapClient = new window.GrabMaps.GrabMapsBuilder()
-          .setBaseUrl('https://maps.grab.com')
-          .setApiKey(apiKey)
-          .build();
+        if (window.rawMap) {
+          try {
+            window.rawMap.remove();
+          } catch (_) {}
+          window.rawMap = null;
+          window.mapReady = false;
+        }
 
-        window.grabMap = new window.GrabMaps.MapBuilder(window.grabMapClient)
-          .setContainer('map-container')
-          .setCenter([103.8198, 1.3521])
-          .setZoom(12)
-          .enableNavigation()
-          .enableLabels()
-          .enableBuildings()
-          .enableAttribution()
-          .build();
+        window.fetchGrabStyle(apiKey)
+          .then(style => {
+            const map = new window.maplibregl.Map({
+              container: 'map-container',
+              style,
+              center: [103.8198, 1.3521],
+              zoom: 12,
+              attributionControl: true,
+            });
 
-        window.mapReady = true;
-        console.log('GrabMaps initialized successfully');
+            map.addControl(new window.maplibregl.NavigationControl(), 'bottom-right');
+
+            map.on('load', function() {
+              window.rawMap = map;
+              window.grabMap = {
+                getMap: function() { return map; },
+                flyTo: function(options) { map.flyTo(options); },
+                onReady: function(callback) {
+                  if (callback) {
+                    callback(map);
+                  }
+                  return Promise.resolve(map);
+                },
+              };
+              if (window.enableClickToPlace && map.doubleClickZoom) {
+                map.doubleClickZoom.disable();
+              }
+              window.notifyMapReady();
+              console.log('Grab map ready');
+            });
+
+            map.on('error', function(event) {
+              const message = event?.error?.message || 'Map failed to load.';
+              window.grabMapError = message;
+              console.error('MapLibre map error:', event);
+            });
+          })
+          .catch(error => {
+            window.grabMapError = error?.message || String(error);
+            console.error('Grab style/map init failed:', error);
+          });
+
+        window._setupClickOverlay();
+        console.log('Map initialization started');
         return true;
       } catch (e) {
         window.grabMapError = e?.message || String(e);
@@ -99,61 +186,78 @@
       }
     };
 
+    // Wire up the transparent overlay div to dispatch grabmaps-click events.
+    // Uses pixel-to-lngLat conversion via MapLibre's unproject().
+    window._setupClickOverlay = function() {
+      const overlay = document.getElementById('click-overlay');
+      if (!overlay || window.clickOverlayBound) {
+        return;
+      }
+      window.clickOverlayBound = true;
+
+      overlay.addEventListener('click', function(e) {
+        if (!window.enableClickToPlace) return;
+        const m = window.getRawMap();
+        if (!m) {
+          console.warn('getRawMap() returned null on overlay click');
+          return;
+        }
+        // Convert screen pixel to map coordinates
+        const rect = overlay.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        const lngLat = m.unproject([x, y]);
+        window.dispatchEvent(new CustomEvent('grabmaps-click', {
+          detail: { lat: lngLat.lat, lng: lngLat.lng }
+        }));
+      });
+    };
+
     window.getGrabMapError = function() {
       return window.grabMapError || '';
     };
 
-    // Fly to location
     window.flyToLocation = function(lng, lat, zoom) {
-      if (window.grabMap) {
-        const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
-        if (m && m.flyTo) {
-          m.flyTo({ center: [lng, lat], zoom: zoom || 13 });
-        }
-      }
+      const m = window.getRawMap();
+      if (m) m.flyTo({ center: [lng, lat], zoom: zoom || 13 });
     };
 
-    // Add a colored marker
     window.addMarker = function(id, lat, lng, color, label) {
-      if (!window.grabMap) return;
-      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
-      if (!m) return;
+      window.waitForMapReady().then(m => {
+        if (!m) return;
+        window.removeMarker(id);
 
-      // Remove existing marker with same id
-      window.removeMarker(id);
+        const el = document.createElement('div');
+        el.id = 'marker-' + id;
+        el.style.width = '36px';
+        el.style.height = '36px';
+        el.style.borderRadius = '50%';
+        el.style.backgroundColor = color;
+        el.style.border = '3px solid white';
+        el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
+        el.style.display = 'flex';
+        el.style.alignItems = 'center';
+        el.style.justifyContent = 'center';
+        el.style.color = 'white';
+        el.style.fontWeight = 'bold';
+        el.style.fontSize = '14px';
+        el.style.cursor = 'pointer';
+        el.innerText = label || '';
 
-      const el = document.createElement('div');
-      el.id = 'marker-' + id;
-      el.style.width = '36px';
-      el.style.height = '36px';
-      el.style.borderRadius = '50%';
-      el.style.backgroundColor = color;
-      el.style.border = '3px solid white';
-      el.style.boxShadow = '0 2px 8px rgba(0,0,0,0.3)';
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.style.justifyContent = 'center';
-      el.style.color = 'white';
-      el.style.fontWeight = 'bold';
-      el.style.fontSize = '14px';
-      el.style.cursor = 'pointer';
-      el.innerText = label || '';
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([lng, lat])
+          .addTo(m);
 
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([lng, lat])
-        .addTo(m);
-
-      window.friendPins.push({ id, marker });
+        window.friendPins.push({ id, marker });
+      });
     };
 
-    // Remove a marker by id
     window.removeMarker = function(id) {
       const idx = window.friendPins.findIndex(p => p.id === id);
       if (idx !== -1) {
         window.friendPins[idx].marker.remove();
         window.friendPins.splice(idx, 1);
       }
-      // Also check result pins
       const ridx = window.resultPins.findIndex(p => p.id === id);
       if (ridx !== -1) {
         window.resultPins[ridx].marker.remove();
@@ -161,44 +265,39 @@
       }
     };
 
-    // Add a result POI marker (smaller, different style)
     window.addResultMarker = function(id, lat, lng, color, rank) {
-      if (!window.grabMap) return;
-      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
-      if (!m) return;
+      window.waitForMapReady().then(m => {
+        if (!m) return;
+        window.removeMarker(id);
 
-      window.removeMarker(id);
+        const el = document.createElement('div');
+        el.id = 'marker-' + id;
+        el.style.width = '28px';
+        el.style.height = '28px';
+        el.style.borderRadius = '50%';
+        el.style.backgroundColor = color;
+        el.style.border = '2px solid white';
+        el.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
+        el.style.display = 'flex';
+        el.style.alignItems = 'center';
+        el.style.justifyContent = 'center';
+        el.style.color = 'white';
+        el.style.fontWeight = 'bold';
+        el.style.fontSize = '11px';
+        el.innerText = rank || '';
 
-      const el = document.createElement('div');
-      el.id = 'marker-' + id;
-      el.style.width = '28px';
-      el.style.height = '28px';
-      el.style.borderRadius = '50%';
-      el.style.backgroundColor = color;
-      el.style.border = '2px solid white';
-      el.style.boxShadow = '0 2px 6px rgba(0,0,0,0.25)';
-      el.style.display = 'flex';
-      el.style.alignItems = 'center';
-      el.style.justifyContent = 'center';
-      el.style.color = 'white';
-      el.style.fontWeight = 'bold';
-      el.style.fontSize = '11px';
-      el.innerText = rank || '';
+        const marker = new maplibregl.Marker({ element: el })
+          .setLngLat([lng, lat])
+          .addTo(m);
 
-      const marker = new maplibregl.Marker({ element: el })
-        .setLngLat([lng, lat])
-        .addTo(m);
-
-      window.resultPins.push({ id, marker });
+        window.resultPins.push({ id, marker });
+      });
     };
 
-    // Draw a route line on the map
     window.drawRouteLine = function(routeId, coordinates, color, width) {
-      if (!window.grabMap) return;
-      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      const m = window.getRawMap();
       if (!m) return;
 
-      // Remove existing route with same id
       if (m.getSource(routeId)) {
         m.removeLayer(routeId + '-layer');
         m.removeSource(routeId);
@@ -208,10 +307,7 @@
         type: 'geojson',
         data: {
           type: 'Feature',
-          geometry: {
-            type: 'LineString',
-            coordinates: coordinates // [[lng, lat], [lng, lat], ...]
-          }
+          geometry: { type: 'LineString', coordinates }
         }
       });
 
@@ -219,10 +315,7 @@
         id: routeId + '-layer',
         type: 'line',
         source: routeId,
-        layout: {
-          'line-join': 'round',
-          'line-cap': 'round'
-        },
+        layout: { 'line-join': 'round', 'line-cap': 'round' },
         paint: {
           'line-color': color || '#4ade80',
           'line-width': width || 4,
@@ -231,12 +324,9 @@
       });
     };
 
-    // Clear all route lines
     window.clearRoutes = function() {
-      if (!window.grabMap) return;
-      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
+      const m = window.getRawMap();
       if (!m) return;
-
       const style = m.getStyle();
       if (style && style.layers) {
         style.layers.forEach(layer => {
@@ -249,51 +339,40 @@
       }
     };
 
-    // Clear result markers only
     window.clearResults = function() {
       window.resultPins.forEach(p => p.marker.remove());
       window.resultPins = [];
       window.clearRoutes();
     };
 
-    // Fit map bounds to show all points
     window.fitBounds = function(points) {
-      if (!window.grabMap || !points.length) return;
-      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
-      if (!m) return;
-
+      const m = window.getRawMap();
+      if (!m || !points.length) return;
       const bounds = new maplibregl.LngLatBounds();
       points.forEach(p => bounds.extend([p.lng, p.lat]));
       m.fitBounds(bounds, { padding: 80, maxZoom: 15 });
     };
 
-    // Enable click-to-place mode
-    window.enableClickToPlace = false;
-    window.onMapClickCallback = null;
-
     window.setClickToPlace = function(enabled) {
       window.enableClickToPlace = enabled;
-    };
+      const overlay = document.getElementById('click-overlay');
+      // Activate/deactivate the transparent overlay
+      overlay.style.pointerEvents = enabled ? 'auto' : 'none';
 
-    // Set up map click listener (called once after map loads)
-    window.setupClickListener = function() {
-      if (!window.grabMap) return;
-      const m = window.grabMap.getMap ? window.grabMap.getMap() : window.grabMap;
-      if (!m) return;
-
-      m.on('click', function(e) {
-        if (window.enableClickToPlace) {
-          const lat = e.lngLat.lat;
-          const lng = e.lngLat.lng;
-          // Send to Flutter via a custom event
-          window.parent.postMessage({
-            type: 'mapClick',
-            lat: lat,
-            lng: lng
-          }, '*');
+      // Also change cursor on the MapLibre canvas if accessible
+      try {
+        const m = window.getRawMap();
+        if (m && typeof m.getCanvas === 'function') {
+          m.getCanvas().style.cursor = enabled ? 'crosshair' : '';
         }
-      });
+        if (m && m.doubleClickZoom) {
+          enabled ? m.doubleClickZoom.disable() : m.doubleClickZoom.enable();
+        }
+      } catch (_) {}
     };
+
+    // setupClickListener kept for backward compat — overlay handles clicks now
+    window.setupClickListener = function() {};
   </script>
 
   <script src="flutter_bootstrap.js" async></script>

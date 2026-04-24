@@ -1,5 +1,14 @@
+import 'dart:async';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
+import 'dart:js_util' as js_util;
+
+import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
+
+import 'friendship_radius_api.dart';
 import 'map_bridge.dart';
+import 'polyline_codec.dart';
 
 void main() {
   runApp(const MyApp());
@@ -14,60 +23,614 @@ class MyApp extends StatelessWidget {
       title: 'Friendship Radius',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.green),
+        colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xFF166534)),
         useMaterial3: true,
+        fontFamily: 'ArialUnicode',
       ),
-      home: const MapTestScreen(),
+      home: const MapScreen(),
     );
   }
 }
 
-class MapTestScreen extends StatefulWidget {
-  const MapTestScreen({super.key});
+class MapScreen extends StatefulWidget {
+  const MapScreen({super.key});
 
   @override
-  State<MapTestScreen> createState() => _MapTestScreenState();
+  State<MapScreen> createState() => _MapScreenState();
 }
 
-class _MapTestScreenState extends State<MapTestScreen> {
+class _MapScreenState extends State<MapScreen> {
   final _mapBridge = MapBridge();
+  final _api = FriendshipRadiusApi();
+
+  final List<_FriendLocation> _friends = [];
+  final List<_MeetingResult> _results = [];
+  final Set<String> _renderedFriendIds = <String>{};
+
+  StreamSubscription<html.MessageEvent>? _messageSubscription;
+  html.EventListener? _mapClickListener;
+
   bool _mapLoaded = false;
-  String _status = 'Loading map...';
+  bool _proxyHealthy = false;
+  bool _proxyHasKey = false;
+  bool _isAddingFriend = false;
+  bool _isRunningSearch = false;
+  bool _didBootstrap = false;
+  int _selectedResultIndex = 0;
+
+  String _mapStatus = 'Loading map...';
+  String _proxyStatus = 'Checking Shelf proxy...';
+  String _meetupStatus = 'Preparing your map...';
+  String _selectedCategory = 'bar';
+  String _selectedProfile = 'driving';
+
+  static const _friendTemplates = <_FriendTemplate>[
+    _FriendTemplate(label: 'A', color: '#EF4444'),
+    _FriendTemplate(label: 'B', color: '#3B82F6'),
+    _FriendTemplate(label: 'C', color: '#F59E0B'),
+    _FriendTemplate(label: 'D', color: '#8B5CF6'),
+    _FriendTemplate(label: 'E', color: '#10B981'),
+  ];
+
+  static const _categoryOptions = <_CategoryOption>[
+    _CategoryOption(label: 'Restaurant', keyword: 'restaurant'),
+    _CategoryOption(label: 'Cafe', keyword: 'cafe'),
+    _CategoryOption(label: 'Bar', keyword: 'bar'),
+    _CategoryOption(label: 'Hawker', keyword: 'hawker'),
+    _CategoryOption(label: 'Mall', keyword: 'mall'),
+  ];
+
+  static const _profileOptions = <_ProfileOption>[
+    _ProfileOption(label: 'Driving', value: 'driving'),
+    _ProfileOption(label: 'Walking', value: 'walking'),
+  ];
+
+  static const _seedFriends = <({double lat, double lng})>[
+    (lat: 1.2834, lng: 103.8607),
+    (lat: 1.3009, lng: 103.8394),
+    (lat: 1.3521, lng: 103.8198),
+  ];
 
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _initMap());
+    _messageSubscription = html.window.onMessage.listen(_handleBrowserMessage);
+    _mapClickListener = (event) => _handleCustomMapClick(event);
+    html.window.addEventListener('grabmaps-click', _mapClickListener);
+    WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
+  }
+
+  @override
+  void dispose() {
+    _messageSubscription?.cancel();
+    if (_mapClickListener != null) {
+      html.window.removeEventListener('grabmaps-click', _mapClickListener);
+    }
+    super.dispose();
+  }
+
+  Future<void> _bootstrap() async {
+    if (_didBootstrap) {
+      return;
+    }
+    _didBootstrap = true;
+
+    try {
+      _initMap();
+      if (!_mapLoaded) {
+        return;
+      }
+
+      await Future<void>.delayed(const Duration(seconds: 2));
+      _seedInitialFriends();
+      await _checkProxy();
+      await _resolveAllFriendAddresses();
+
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _meetupStatus =
+            'Tap `Find Fairest Spot` to rank real venues for your current group.';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _proxyStatus = 'Bootstrap failed: $error';
+        _meetupStatus = 'Fix the setup issue above, then try again.';
+      });
+    }
   }
 
   void _initMap() {
-    // PUT YOUR API KEY HERE
     const apiKey = 'bm_1776994862_KawMha9ThhfhcffRIuVgjLRcynTD5DEk';
-
     final success = _mapBridge.init(apiKey);
     setState(() {
       _mapLoaded = success;
       final error = _mapBridge.lastError;
-      _status = success
-          ? 'Map loaded!'
+      _mapStatus = success
+          ? 'Map loaded and ready for interaction.'
           : error.isEmpty
               ? 'Map failed to load'
               : 'Map failed to load: $error';
     });
+  }
 
-    if (success) {
-      // Test: add a pin at Marina Bay Sands
-      Future.delayed(const Duration(seconds: 3), () {
-        _mapBridge.addFriendPin(
-          id: 'test1',
-          lat: 1.2834,
-          lng: 103.8607,
-          color: '#EF4444',
-          label: 'A',
-        );
-        _mapBridge.flyTo(1.2834, 103.8607, zoom: 14);
-        setState(() => _status = 'Pin added at Marina Bay Sands!');
+  Future<void> _checkProxy() async {
+    setState(() {
+      _proxyStatus = 'Checking Shelf proxy...';
+    });
+
+    try {
+      final health = await _api.health();
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _proxyHealthy = health.ok;
+        _proxyHasKey = health.hasApiKey;
+        _proxyStatus = health.ok
+            ? health.hasApiKey
+                ? 'Proxy healthy and Grab API key is present.'
+                : 'Proxy healthy, but GRAB_MAPS_API_KEY is missing.'
+            : 'Proxy health check failed.';
       });
+    } on DioException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _proxyHealthy = false;
+        _proxyHasKey = false;
+        _proxyStatus = 'Proxy check failed: ${_describeDioError(error)}';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _proxyHealthy = false;
+        _proxyHasKey = false;
+        _proxyStatus = 'Proxy check failed: $error';
+      });
+    }
+  }
+
+  void _seedInitialFriends() {
+    if (_friends.isNotEmpty) {
+      return;
+    }
+
+    for (var i = 0; i < _seedFriends.length; i++) {
+      final template = _friendTemplates[i];
+      final point = _seedFriends[i];
+      _friends.add(
+        _FriendLocation(
+          id: 'friend_${template.label.toLowerCase()}',
+          label: template.label,
+          color: template.color,
+          lat: point.lat,
+          lng: point.lng,
+        ),
+      );
+    }
+
+    _syncFriendMarkers();
+  }
+
+  Future<void> _resolveAllFriendAddresses() async {
+    if (!_proxyHealthy || !_proxyHasKey) {
+      return;
+    }
+    await Future.wait(_friends.map(_resolveFriendAddress));
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  Future<void> _resolveFriendAddress(_FriendLocation friend) async {
+    try {
+      final response = await _api.reverseGeocode(
+        lat: friend.lat,
+        lng: friend.lng,
+      );
+      final places = (response['places'] as List?) ?? const [];
+      if (places.isEmpty) {
+        return;
+      }
+      final place = places.first;
+      if (place is! Map) {
+        return;
+      }
+      final data = Map<String, dynamic>.from(place.cast<String, dynamic>());
+      final address = (data['formatted_address'] ?? data['name'])?.toString();
+      if (address == null || address.isEmpty) {
+        return;
+      }
+      friend.address = address;
+    } catch (_) {
+      // Leave the address empty if reverse geocoding fails.
+    }
+  }
+
+  void _handleBrowserMessage(html.MessageEvent event) {
+    final data = event.data;
+    final type = _readJsString(data, 'type');
+    if (type != 'mapClick') {
+      return;
+    }
+
+    final lat = _readJsDouble(data, 'lat');
+    final lng = _readJsDouble(data, 'lng');
+    if (!_isAddingFriend || lat == null || lng == null) {
+      return;
+    }
+
+    _addFriendFromMap(lat, lng);
+  }
+
+  void _handleCustomMapClick(html.Event event) {
+    if (!_isAddingFriend) {
+      return;
+    }
+
+    final detail = js_util.getProperty<Object?>(event, 'detail');
+    final lat = _readJsDouble(detail, 'lat');
+    final lng = _readJsDouble(detail, 'lng');
+    if (lat == null || lng == null) {
+      return;
+    }
+
+    _addFriendFromMap(lat, lng);
+  }
+
+  Future<void> _addFriendFromMap(double lat, double lng) async {
+    final template = _nextFriendTemplate();
+    if (template == null) {
+      return;
+    }
+
+    final friend = _FriendLocation(
+      id: 'friend_${template.label.toLowerCase()}',
+      label: template.label,
+      color: template.color,
+      lat: lat,
+      lng: lng,
+    );
+
+    setState(() {
+      _friends.add(friend);
+      _isAddingFriend = false;
+      _meetupStatus =
+          'Added friend ${friend.label}. Adjust filters or tap `Find Fairest Spot`.';
+    });
+
+    _mapBridge.setClickToPlace(false);
+    _syncFriendMarkers();
+    await _resolveFriendAddress(friend);
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  void _toggleAddFriendMode() {
+    if (_friends.length >= _friendTemplates.length) {
+      return;
+    }
+
+    final next = !_isAddingFriend;
+    setState(() {
+      _isAddingFriend = next;
+      _meetupStatus = next
+          ? 'Click anywhere on the map to place friend ${_nextFriendTemplate()?.label ?? ''}.'
+          : 'Friend placement canceled.';
+    });
+    _mapBridge.setClickToPlace(next);
+  }
+
+  void _removeFriend(_FriendLocation friend) {
+    setState(() {
+      _friends.removeWhere((item) => item.id == friend.id);
+      _results.clear();
+      _selectedResultIndex = 0;
+      _meetupStatus =
+          'Removed friend ${friend.label}. Add another friend or search again.';
+    });
+    _mapBridge.removeFriendPin(friend.id);
+    _renderedFriendIds.remove(friend.id);
+    _mapBridge.clearResults();
+    _syncFriendMarkers();
+  }
+
+  Future<void> _findFairestSpot() async {
+    if (_friends.length < 2) {
+      setState(() {
+        _meetupStatus = 'Add at least 2 friends before calculating fairness.';
+      });
+      return;
+    }
+    if (!_proxyHealthy) {
+      setState(() {
+        _meetupStatus =
+            'Proxy is not reachable yet. Start the Shelf server first.';
+      });
+      return;
+    }
+    if (!_proxyHasKey) {
+      setState(() {
+        _meetupStatus =
+            'Proxy is running without GRAB_MAPS_API_KEY. Add the key and retry.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isRunningSearch = true;
+      _meetupStatus =
+          'Searching nearby ${_selectedCategory}s and calculating fairness...';
+    });
+
+    try {
+      final result = await _api.rankMeetup(
+        friends: _friends
+            .map((friend) => {
+                  'id': friend.id,
+                  'lat': friend.lat,
+                  'lng': friend.lng,
+                })
+            .toList(),
+        keyword: _selectedCategory,
+        radiusKm: 3,
+        candidateLimit: 8,
+        profile: _selectedProfile,
+      );
+
+      final parsedResults = _parseMeetingResults(result);
+      if (!mounted) {
+        return;
+      }
+
+      if (parsedResults.isEmpty) {
+        setState(() {
+          _results..clear();
+          _isRunningSearch = false;
+          _meetupStatus =
+              'No candidate venues were ranked. Try another category or move the pins.';
+        });
+        _mapBridge.clearResults();
+        return;
+      }
+
+      setState(() {
+        _results
+          ..clear()
+          ..addAll(parsedResults);
+        _selectedResultIndex = 0;
+        _isRunningSearch = false;
+      });
+      _renderSelectedResult();
+    } on DioException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isRunningSearch = false;
+        _meetupStatus = 'Meetup search failed: ${_describeDioError(error)}';
+      });
+    } catch (error) {
+      if (!mounted) {
+        return;
+      }
+      setState(() {
+        _isRunningSearch = false;
+        _meetupStatus = 'Meetup search failed: $error';
+      });
+    }
+  }
+
+  List<_MeetingResult> _parseMeetingResults(Map<String, dynamic> result) {
+    final rawResults = (result['results'] as List?) ?? const [];
+    return rawResults.whereType<Map>().map((entry) {
+      final map = Map<String, dynamic>.from(entry.cast<String, dynamic>());
+      final place = Map<String, dynamic>.from(
+        (map['place'] as Map).cast<String, dynamic>(),
+      );
+      final score = Map<String, dynamic>.from(
+        (map['score'] as Map).cast<String, dynamic>(),
+      );
+      final routes =
+          ((map['routes'] as List?) ?? const []).whereType<Map>().map((route) {
+        final routeMap =
+            Map<String, dynamic>.from(route.cast<String, dynamic>());
+        return _ResultRoute(
+          friendId: routeMap['friendId'].toString(),
+          durationSeconds:
+              (routeMap['durationSeconds'] as num?)?.toDouble() ?? 0,
+          distanceMeters: (routeMap['distanceMeters'] as num?)?.toDouble() ?? 0,
+          geometry: routeMap['geometry']?.toString(),
+        );
+      }).toList();
+
+      return _MeetingResult(
+        poiId: (place['poi_id'] ?? place['id'] ?? place['name']).toString(),
+        name: (place['name'] ?? 'Unknown place').toString(),
+        address: (place['formatted_address'] ?? place['address'])?.toString(),
+        businessType: (place['business_type'] ??
+                place['category'] ??
+                _firstCategoryName(place['categories']))
+            ?.toString(),
+        lat: _placeLat(place),
+        lng: _placeLng(place),
+        unfairnessSeconds:
+            (score['unfairnessSeconds'] as num?)?.toDouble() ?? 0,
+        maxDurationSeconds:
+            (score['maxDurationSeconds'] as num?)?.toDouble() ?? 0,
+        minDurationSeconds:
+            (score['minDurationSeconds'] as num?)?.toDouble() ?? 0,
+        avgDurationSeconds:
+            (score['averageDurationSeconds'] as num?)?.toDouble() ?? 0,
+        routes: routes,
+      );
+    }).toList();
+  }
+
+  void _renderSelectedResult() {
+    if (_results.isEmpty) {
+      _mapBridge.clearResults();
+      return;
+    }
+
+    final selected = _results[_selectedResultIndex];
+    _mapBridge.clearResults();
+
+    for (var i = 0; i < _results.length && i < 3; i++) {
+      final candidate = _results[i];
+      _mapBridge.addResultPin(
+        id: 'result_${candidate.poiId}',
+        lat: candidate.lat,
+        lng: candidate.lng,
+        color: i == _selectedResultIndex ? '#111827' : '#15803D',
+        rank: '${i + 1}',
+      );
+    }
+
+    for (final route in selected.routes) {
+      final friend = _friendById(route.friendId);
+      if (friend == null || route.geometry == null || route.geometry!.isEmpty) {
+        continue;
+      }
+      final coordinates = PolylineCodec.decodePolyline6(route.geometry!);
+      _mapBridge.drawRoute(
+        routeId: 'route_${selected.poiId}_${route.friendId}',
+        coordinates: coordinates,
+        color: friend.color,
+        width: 5,
+      );
+    }
+
+    final focusPoints = <({double lat, double lng})>[
+      ..._friends.map((friend) => (lat: friend.lat, lng: friend.lng)),
+      (lat: selected.lat, lng: selected.lng),
+    ];
+    _mapBridge.fitBoundsToPoints(focusPoints);
+
+    setState(() {
+      _meetupStatus =
+          'Winner: ${selected.name}. Fairness gap ${_formatMinutes(selected.unfairnessSeconds)} min, max trip ${_formatMinutes(selected.maxDurationSeconds)} min.';
+    });
+  }
+
+  void _selectResult(int index) {
+    setState(() {
+      _selectedResultIndex = index;
+    });
+    _renderSelectedResult();
+  }
+
+  void _syncFriendMarkers() {
+    final activeIds = _friends.map((friend) => friend.id).toSet();
+    for (final staleId in _renderedFriendIds.difference(activeIds).toList()) {
+      _mapBridge.removeFriendPin(staleId);
+      _renderedFriendIds.remove(staleId);
+    }
+
+    for (final friend in _friends) {
+      _mapBridge.addFriendPin(
+        id: friend.id,
+        lat: friend.lat,
+        lng: friend.lng,
+        color: friend.color,
+        label: friend.label,
+      );
+      _renderedFriendIds.add(friend.id);
+    }
+
+    if (_friends.isNotEmpty) {
+      _mapBridge.fitBoundsToPoints(
+        _friends.map((friend) => (lat: friend.lat, lng: friend.lng)).toList(),
+      );
+    }
+  }
+
+  _FriendTemplate? _nextFriendTemplate() {
+    final usedLabels = _friends.map((friend) => friend.label).toSet();
+    for (final template in _friendTemplates) {
+      if (!usedLabels.contains(template.label)) {
+        return template;
+      }
+    }
+    return null;
+  }
+
+  _FriendLocation? _friendById(String friendId) {
+    for (final friend in _friends) {
+      if (friend.id == friendId) {
+        return friend;
+      }
+    }
+    return null;
+  }
+
+  double _placeLat(Map<String, dynamic> place) {
+    final location = place['location'];
+    if (location is Map && location['latitude'] is num) {
+      return (location['latitude'] as num).toDouble();
+    }
+    return (place['lat'] as num?)?.toDouble() ?? 0;
+  }
+
+  double _placeLng(Map<String, dynamic> place) {
+    final location = place['location'];
+    if (location is Map && location['longitude'] is num) {
+      return (location['longitude'] as num).toDouble();
+    }
+    return (place['lng'] as num?)?.toDouble() ?? 0;
+  }
+
+  String _formatMinutes(double? seconds) {
+    if (seconds == null) {
+      return '-';
+    }
+    return (seconds / 60).toStringAsFixed(1);
+  }
+
+  String _describeDioError(DioException error) {
+    if (error.type == DioExceptionType.connectionError ||
+        error.type == DioExceptionType.connectionTimeout) {
+      return 'Could not reach ${const String.fromEnvironment(
+        'FRIENDSHIP_RADIUS_API_BASE_URL',
+        defaultValue: 'http://127.0.0.1:8080',
+      )}';
+    }
+    if (error.response?.data case final Map data) {
+      final message = data['error'];
+      if (message != null) {
+        return message.toString();
+      }
+    }
+    return error.message ?? error.toString();
+  }
+
+  String? _readJsString(dynamic object, String property) {
+    try {
+      final value = js_util.getProperty<Object?>(object, property);
+      return value?.toString();
+    } catch (_) {
+      return null;
+    }
+  }
+
+  double? _readJsDouble(dynamic object, String property) {
+    try {
+      final value = js_util.getProperty<Object?>(object, property);
+      if (value is num) {
+        return value.toDouble();
+      }
+      return double.tryParse(value.toString());
+    } catch (_) {
+      return null;
     }
   }
 
@@ -75,36 +638,660 @@ class _MapTestScreenState extends State<MapTestScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: Colors.transparent,
-      body: Align(
-        alignment: Alignment.bottomCenter,
-        child: Container(
-          margin: const EdgeInsets.all(20),
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: Colors.white,
-            borderRadius: BorderRadius.circular(16),
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.15),
-                blurRadius: 20,
-              ),
-            ],
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'Friendship Radius',
-                style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                  fontWeight: FontWeight.bold,
+      body: SafeArea(
+        child: Align(
+          alignment: Alignment.bottomCenter,
+          child: Container(
+            margin: const EdgeInsets.all(20),
+            constraints: const BoxConstraints(maxWidth: 940, maxHeight: 520),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(24),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.18),
+                  blurRadius: 28,
+                  offset: const Offset(0, 10),
                 ),
+              ],
+            ),
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 54,
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: const Color(0xFFD1D5DB),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    'Friendship Radius',
+                    style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.w800,
+                        ),
+                  ),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Find the fairest real-world meetup spot for everyone.',
+                    style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                          color: const Color(0xFF4B5563),
+                        ),
+                    textAlign: TextAlign.center,
+                  ),
+                  const SizedBox(height: 18),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      _StatusBadge(
+                          label: 'Map', value: _mapStatus, ok: _mapLoaded),
+                      _StatusBadge(
+                        label: 'Proxy',
+                        value: _proxyStatus,
+                        ok: _proxyHealthy && _proxyHasKey,
+                      ),
+                      _StatusBadge(
+                        label: 'Meetup',
+                        value: _meetupStatus,
+                        ok: _results.isNotEmpty,
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 20),
+                  _SectionHeader(
+                    title: 'Friends',
+                    subtitle:
+                        'Use the seeded friends or add more by clicking the map. Minimum 2, maximum 5.',
+                  ),
+                  const SizedBox(height: 12),
+                  Wrap(
+                    spacing: 10,
+                    runSpacing: 10,
+                    children: [
+                      for (final friend in _friends)
+                        _FriendChip(
+                          friend: friend,
+                          onRemove: () => _removeFriend(friend),
+                        ),
+                      if (_friends.length < _friendTemplates.length)
+                        OutlinedButton.icon(
+                          onPressed: _mapLoaded ? _toggleAddFriendMode : null,
+                          icon: Icon(_isAddingFriend ? Icons.close : Icons.add),
+                          label: Text(
+                            _isAddingFriend ? 'Cancel Add' : 'Add Friend',
+                          ),
+                        ),
+                    ],
+                  ),
+                  if (_isAddingFriend) ...[
+                    const SizedBox(height: 10),
+                    Text(
+                      'Click on the map to place friend ${_nextFriendTemplate()?.label ?? ''}.',
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                            color: const Color(0xFF166534),
+                            fontWeight: FontWeight.w600,
+                          ),
+                    ),
+                  ],
+                  const SizedBox(height: 20),
+                  _SectionHeader(
+                    title: 'Filters',
+                    subtitle:
+                        'Pick a vibe and travel mode before ranking venues.',
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final option in _categoryOptions)
+                          ChoiceChip(
+                            label: Text(option.label),
+                            selected: _selectedCategory == option.keyword,
+                            onSelected: (_) {
+                              setState(() {
+                                _selectedCategory = option.keyword;
+                              });
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        for (final option in _profileOptions)
+                          ChoiceChip(
+                            label: Text(option.label),
+                            selected: _selectedProfile == option.value,
+                            onSelected: (_) {
+                              setState(() {
+                                _selectedProfile = option.value;
+                              });
+                            },
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(height: 18),
+                  SizedBox(
+                    width: double.infinity,
+                    child: FilledButton.icon(
+                      onPressed: _isRunningSearch ? null : _findFairestSpot,
+                      icon: _isRunningSearch
+                          ? const SizedBox(
+                              width: 16,
+                              height: 16,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.route),
+                      label: Text(
+                        _isRunningSearch
+                            ? 'Calculating fairness...'
+                            : 'Find Fairest Spot',
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  _SectionHeader(
+                    title: 'Best Meeting Points',
+                    subtitle: _results.isEmpty
+                        ? 'Run a search to rank the fairest venues.'
+                        : 'Tap a result to focus it on the map and redraw all routes.',
+                  ),
+                  const SizedBox(height: 12),
+                  if (_results.isEmpty)
+                    Container(
+                      width: double.infinity,
+                      padding: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFF8FAFC),
+                        borderRadius: BorderRadius.circular(18),
+                        border: Border.all(color: const Color(0xFFE5E7EB)),
+                      ),
+                      child: const Text(
+                        'No ranked venues yet. Choose your category, then tap `Find Fairest Spot`.',
+                      ),
+                    )
+                  else
+                    Column(
+                      children: [
+                        for (var i = 0; i < _results.length && i < 5; i++) ...[
+                          _ResultCard(
+                            result: _results[i],
+                            rank: i + 1,
+                            selected: i == _selectedResultIndex,
+                            friends: _friends,
+                            onTap: () => _selectResult(i),
+                            formatMinutes: _formatMinutes,
+                          ),
+                          if (i < _results.length - 1 && i < 4)
+                            const SizedBox(height: 10),
+                        ],
+                      ],
+                    ),
+                ],
               ),
-              const SizedBox(height: 8),
-              Text(_status),
-            ],
+            ),
           ),
         ),
       ),
     );
   }
+}
+
+class _FriendTemplate {
+  const _FriendTemplate({
+    required this.label,
+    required this.color,
+  });
+
+  final String label;
+  final String color;
+}
+
+class _FriendLocation {
+  _FriendLocation({
+    required this.id,
+    required this.label,
+    required this.color,
+    required this.lat,
+    required this.lng,
+    this.address,
+  });
+
+  final String id;
+  final String label;
+  final String color;
+  final double lat;
+  final double lng;
+  String? address;
+}
+
+class _CategoryOption {
+  const _CategoryOption({
+    required this.label,
+    required this.keyword,
+  });
+
+  final String label;
+  final String keyword;
+}
+
+class _ProfileOption {
+  const _ProfileOption({
+    required this.label,
+    required this.value,
+  });
+
+  final String label;
+  final String value;
+}
+
+class _MeetingResult {
+  const _MeetingResult({
+    required this.poiId,
+    required this.name,
+    required this.lat,
+    required this.lng,
+    required this.unfairnessSeconds,
+    required this.maxDurationSeconds,
+    required this.minDurationSeconds,
+    required this.avgDurationSeconds,
+    required this.routes,
+    this.address,
+    this.businessType,
+  });
+
+  final String poiId;
+  final String name;
+  final String? address;
+  final String? businessType;
+  final double lat;
+  final double lng;
+  final double unfairnessSeconds;
+  final double maxDurationSeconds;
+  final double minDurationSeconds;
+  final double avgDurationSeconds;
+  final List<_ResultRoute> routes;
+}
+
+class _ResultRoute {
+  const _ResultRoute({
+    required this.friendId,
+    required this.durationSeconds,
+    required this.distanceMeters,
+    this.geometry,
+  });
+
+  final String friendId;
+  final double durationSeconds;
+  final double distanceMeters;
+  final String? geometry;
+}
+
+class _StatusBadge extends StatelessWidget {
+  const _StatusBadge({
+    required this.label,
+    required this.value,
+    required this.ok,
+  });
+
+  final String label;
+  final String value;
+  final bool ok;
+
+  @override
+  Widget build(BuildContext context) {
+    final color = ok ? const Color(0xFF166534) : const Color(0xFF92400E);
+    final bg = ok ? const Color(0xFFDCFCE7) : const Color(0xFFFEF3C7);
+    return Container(
+      constraints: const BoxConstraints(minWidth: 200),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 58,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: Colors.white.withValues(alpha: 0.75),
+              borderRadius: BorderRadius.circular(999),
+            ),
+            child: Text(
+              label,
+              style: TextStyle(
+                color: color,
+                fontWeight: FontWeight.w800,
+              ),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(value),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({
+    required this.title,
+    required this.subtitle,
+  });
+
+  final String title;
+  final String subtitle;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            title,
+            style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ),
+        const SizedBox(height: 4),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            subtitle,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: const Color(0xFF6B7280),
+                ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _FriendChip extends StatelessWidget {
+  const _FriendChip({
+    required this.friend,
+    required this.onRemove,
+  });
+
+  final _FriendLocation friend;
+  final VoidCallback onRemove;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF8FAFC),
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(color: const Color(0xFFE5E7EB)),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          CircleAvatar(
+            radius: 14,
+            backgroundColor: Color(_hexToColor(friend.color)),
+            child: Text(
+              friend.label,
+              style: const TextStyle(
+                color: Colors.white,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+          ),
+          const SizedBox(width: 10),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 190),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Friend ${friend.label}',
+                  style: const TextStyle(fontWeight: FontWeight.w700),
+                ),
+                Text(
+                  friend.address ??
+                      '${friend.lat.toStringAsFixed(4)}, ${friend.lng.toStringAsFixed(4)}',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style:
+                      const TextStyle(color: Color(0xFF6B7280), fontSize: 12),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          IconButton(
+            onPressed: onRemove,
+            icon: const Icon(Icons.close),
+            tooltip: 'Remove friend',
+            visualDensity: VisualDensity.compact,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ResultCard extends StatelessWidget {
+  const _ResultCard({
+    required this.result,
+    required this.rank,
+    required this.selected,
+    required this.friends,
+    required this.onTap,
+    required this.formatMinutes,
+  });
+
+  final _MeetingResult result;
+  final int rank;
+  final bool selected;
+  final List<_FriendLocation> friends;
+  final VoidCallback onTap;
+  final String Function(double?) formatMinutes;
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor =
+        selected ? const Color(0xFF166534) : const Color(0xFFE5E7EB);
+    final bg = selected ? const Color(0xFFF0FDF4) : Colors.white;
+
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: bg,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(color: borderColor, width: selected ? 2 : 1),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 34,
+                  height: 34,
+                  decoration: BoxDecoration(
+                    color: selected
+                        ? const Color(0xFF166534)
+                        : const Color(0xFFE5E7EB),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    '$rank',
+                    style: TextStyle(
+                      color: selected ? Colors.white : const Color(0xFF111827),
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        result.name,
+                        style:
+                            Theme.of(context).textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w800,
+                                ),
+                      ),
+                      if (result.address != null || result.businessType != null)
+                        Text(
+                          [
+                            if (result.businessType != null)
+                              result.businessType!,
+                            if (result.address != null) result.address!,
+                          ].join(' · '),
+                          maxLines: 2,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            color: Color(0xFF6B7280),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.end,
+                  children: [
+                    Text(
+                      '${formatMinutes(result.maxDurationSeconds)} min max',
+                      style: const TextStyle(fontWeight: FontWeight.w800),
+                    ),
+                    Text(
+                      'Spread ${formatMinutes(result.unfairnessSeconds)} min',
+                      style: const TextStyle(color: Color(0xFF6B7280)),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            for (final friend in friends) ...[
+              _RouteSummaryRow(
+                friend: friend,
+                route: result.routes
+                    .where((route) => route.friendId == friend.id)
+                    .firstOrNull,
+                formatMinutes: formatMinutes,
+              ),
+              if (friend != friends.last) const SizedBox(height: 8),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RouteSummaryRow extends StatelessWidget {
+  const _RouteSummaryRow({
+    required this.friend,
+    required this.route,
+    required this.formatMinutes,
+  });
+
+  final _FriendLocation friend;
+  final _ResultRoute? route;
+  final String Function(double?) formatMinutes;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Container(
+          width: 26,
+          height: 26,
+          decoration: BoxDecoration(
+            color: Color(_hexToColor(friend.color)),
+            borderRadius: BorderRadius.circular(999),
+          ),
+          alignment: Alignment.center,
+          child: Text(
+            friend.label,
+            style: const TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.w800,
+              fontSize: 12,
+            ),
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: LinearProgressIndicator(
+            value: ((route?.durationSeconds ?? 0) / 2400).clamp(0.04, 1.0),
+            minHeight: 8,
+            borderRadius: BorderRadius.circular(999),
+            color: Color(_hexToColor(friend.color)),
+            backgroundColor: const Color(0xFFE5E7EB),
+          ),
+        ),
+        const SizedBox(width: 10),
+        SizedBox(
+          width: 108,
+          child: Text(
+            '${formatMinutes(route?.durationSeconds)} min · '
+            '${((route?.distanceMeters ?? 0) / 1000).toStringAsFixed(1)} km',
+            textAlign: TextAlign.right,
+            style: const TextStyle(fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+String? _firstCategoryName(dynamic categories) {
+  if (categories is! List || categories.isEmpty) {
+    return null;
+  }
+  final first = categories.first;
+  if (first is! Map) {
+    return null;
+  }
+  return first['category_name']?.toString();
+}
+
+int _hexToColor(String hex) {
+  final cleaned = hex.replaceFirst('#', '');
+  return int.parse('FF$cleaned', radix: 16);
+}
+
+extension _IterableFirstOrNullExtension<T> on Iterable<T> {
+  T? get firstOrNull => isEmpty ? null : first;
 }

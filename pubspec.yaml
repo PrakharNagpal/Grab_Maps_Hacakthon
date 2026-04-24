@@ -13,3 +13,10 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
+flutter:
+  uses-material-design: true
+  fonts:
+    - family: ArialUnicode
+      fonts:
+        - asset: assets/fonts/ArialUnicode.ttf
