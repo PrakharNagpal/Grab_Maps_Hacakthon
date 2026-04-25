@@ -230,7 +230,15 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   void _initMap() {
-    const apiKey = 'bm_1776994862_KawMha9ThhfhcffRIuVgjLRcynTD5DEk';
+    const apiKey = String.fromEnvironment('GRAB_MAPS_BROWSER_KEY');
+    if (apiKey.isEmpty) {
+      setState(() {
+        _mapLoaded = false;
+        _mapStatus =
+            'Map key missing. Provide GRAB_MAPS_BROWSER_KEY via --dart-define.';
+      });
+      return;
+    }
     final success = _mapBridge.init(apiKey);
     setState(() {
       _mapLoaded = success;

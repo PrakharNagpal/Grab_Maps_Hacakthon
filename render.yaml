@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: equal-miles-api
+    runtime: docker
+    rootDir: server
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: GRAB_MAPS_API_KEY
+        sync: false
