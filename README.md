@@ -4,9 +4,11 @@
 
 Equal Miles finds the meeting spot that nobody can complain about — because it's backed by real road travel times, not a finger-in-the-air midpoint.
 
+**[→ Try the live demo](https://prakharnagpal.github.io/Grab_Maps_Hacakthon/)**
+
 <br/>
 
-![Equal Miles — Friends on the map](assets/Screenshot%202026-04-25%20at%201.29.25%20PM.png)
+![Equal Miles — Place your friends on the map](assets/screenshot_friends.png)
 
 <br/>
 
@@ -24,173 +26,68 @@ The closer to zero, the fairer the meetup.
 
 <br/>
 
-## ✨ What Makes It Different
+## ✨ Features
 
-| Feature | What it does |
-|---|---|
-| ⚖️ **Fairness Ranking** | Ranks venues by the gap between the fastest and slowest trip in your group |
-| 🏆 **Fairest / Fastest / Closest badges** | Every result tells you which dimension it wins on |
-| 📍 **Geographic Center Comparison** | Shows exactly how many minutes fairer the winning venue is vs the naive midpoint |
-| 🎯 **Compare Categories** | One click ranks Restaurant, Cafe, Bar, Hawker, Mall — which vibe is fairest *right now* for your group? |
-| 🗺️ **Click-to-Place Friends** | Tap anywhere on a live GrabMaps map to drop a friend pin |
-| 🔍 **Place Search** | Search friends' locations by address or landmark name |
-| 🚗 **5 Travel Modes** | Driving · Motorcycle · Tricycle · Cycling · Walking (auto-caps search radius to 4 km) |
-| ⭐ **Recommended But Far** | When your radius is too tight, surfaces 9 curated Singapore landmarks as stretch picks |
-| 📡 **Live Address Resolution** | Reverse-geocodes every dropped pin to show a real address |
-
-<br/>
-
-## 🧮 How the Score is Calculated
-
-For each candidate venue, the server concurrently calls the Grab Directions API from **every friend** to that venue, then computes:
-
-```
-blended_score =
-    unfairness_gap                        (primary — the spread)
-  + max_trip          × 0.22             (penalise the worst case)
-  + average_trip      × 0.08             (penalise overall effort)
-  + centroid_distance × 1/42             (driving proximity tie-breaker)
-```
-
-The venue with the **lowest blended score** wins. Ties are broken by unfairness gap → worst trip → centroid distance → total trip time.
-
-> Walking mode uses a stricter `1/18` distance weight and caps the search radius at 4 km automatically.
+| | Feature | What it does |
+|---|---|---|
+| ⚖️ | **Fairness Ranking** | Ranks venues by the gap between the fastest and slowest trip in your group — not by straight-line distance |
+| 🏆 | **Fairest / Fastest / Closest badges** | Every result is labelled so you can understand the trade-off at a glance |
+| 📍 | **Geographic Center Comparison** | Shows how many minutes fairer the winning venue is compared to the naive midpoint |
+| 🎯 | **Compare Categories** | One click ranks Restaurant, Cafe, Bar, Hawker, and Mall — which vibe is fairest *right now* for your group? |
+| 🗺️ | **Click-to-Place Friends** | Drop a friend pin anywhere on a live GrabMaps map with a single click |
+| 🔍 | **Place Search** | Search friends' starting locations by address or landmark name |
+| 🚗 | **5 Travel Modes** | Driving · Motorcycle · Tricycle · Cycling · Walking |
+| ⭐ | **Recommended But Far** | When your radius is too tight, surfaces curated Singapore landmarks as stretch picks |
+| 📡 | **Live Address Resolution** | Reverse-geocodes every dropped pin to show a real address automatically |
 
 <br/>
 
-![Equal Miles — Fairness results](assets/Screenshot%202026-04-25%20at%201.33.32%20PM.png)
+## 🧮 How the Ranking Works
+
+For each candidate venue, the app queries real travel directions from **every friend** simultaneously and computes a fairness score:
+
+```
+Score =  fairness gap           ← primary (who gets the worst deal?)
+       + worst trip  × 0.22     ← secondary (how bad is the worst case?)
+       + average trip × 0.08    ← tertiary (how far is everyone travelling overall?)
+       + distance from group centroid × small weight  ← tie-breaker
+```
+
+The venue with the **lowest score wins.** The result also tells you how much better that venue is than if you had just met at the geographic midpoint.
 
 <br/>
 
-## 🏗️ Architecture
-
-```
-Browser
-├── Flutter Web (left panel UI)
-│   └── dart:js_interop bridge
-└── MapLibre GL JS + Grab Maps Style (live map)
-         │
-         │ HTTP (Dio)
-         ▼
-Dart / Shelf Backend  ──────────────►  Grab Maps API
-(Render.com, Docker)                   - Places nearby
-  ├── MeetupService                    - Keyword search
-  │   ├── rankMeetup()                 - Reverse geocode
-  │   ├── _scorePoint()                - Directions (polyline6)
-  │   └── _compareScore()
-  └── GrabMapsClient
-      └── in-memory response cache
-```
+![Equal Miles — Results with fairness breakdown](assets/screenshot_results.png)
 
 <br/>
 
-## 🚀 Getting Started
+## 🎯 What You See in the Results
 
-### Prerequisites
-
-- Flutter 3.x (stable channel)
-- Dart SDK (included with Flutter)
-- A Grab Maps **Browser API Key** (`GRAB_MAPS_BROWSER_KEY`)
-- A Grab Maps **Server API Key** (`GRAB_MAPS_API_KEY`) for the backend
-
-### Run Locally
-
-**1. Start the backend**
-
-```bash
-cd server
-GRAB_MAPS_API_KEY=your_server_key dart run bin/server.dart
-# Listening on http://0.0.0.0:8080
-```
-
-**2. Run the Flutter web app**
-
-```bash
-flutter pub get
-flutter run -d chrome \
-  --dart-define=GRAB_MAPS_BROWSER_KEY=your_browser_key \
-  --dart-define=FRIENDSHIP_RADIUS_API_BASE_URL=http://localhost:8080
-```
+- **Fairness Gap** — the difference in minutes between the friend with the longest trip and the shortest
+- **Max Trip** — the worst-case commute anyone in the group faces
+- **Average Trip** — how long everyone travels on average
+- **Per-friend breakdown** — individual travel time and distance for each person, shown as a proportional progress bar
+- **Why the winner beats the midpoint** — a side-by-side comparison proving the ranked venue is genuinely fairer than just splitting the difference
 
 <br/>
 
-## ☁️ Deployment
+## 🛣️ What's Coming Next
 
-### Frontend → GitHub Pages
-
-Push to `main` and the GitHub Actions workflow handles the rest:
-
-```yaml
-# .github/workflows/deploy.yml
-flutter build web --release \
-  --base-href /Grab_Maps_Hacakthon/ \
-  --dart-define=GRAB_MAPS_BROWSER_KEY=${{ secrets.GRAB_MAPS_BROWSER_KEY }}
-```
-
-Set `GRAB_MAPS_BROWSER_KEY` in **Repository → Settings → Secrets**.
-
-### Backend → Render.com (Docker)
-
-The server compiles to a self-contained native binary — no Dart runtime needed at runtime:
-
-```dockerfile
-FROM dart:stable AS build
-RUN dart compile exe bin/server.dart -o bin/server_exe
-
-FROM debian:bookworm-slim
-COPY --from=build /app/bin/server_exe /app/server
-CMD ["/app/server"]
-```
-
-Set `GRAB_MAPS_API_KEY` as an environment variable in the Render dashboard.
-
-<br/>
-
-## 📁 Project Structure
-
-```
-grab_maps/
-├── lib/
-│   ├── main.dart                      UI, state management, scoring display
-│   ├── map_bridge.dart                dart:js_interop bindings to MapLibre JS
-│   ├── friendship_radius_api.dart     Dio client for the backend
-│   └── polyline_codec.dart            Polyline6 decoder with axis-order auto-detection
-├── web/
-│   └── index.html                     MapLibre setup, click overlay, JS bridge functions
-├── server/
-│   ├── bin/server.dart                Entry point
-│   ├── lib/src/
-│   │   ├── server.dart                Shelf router + CORS + error handling
-│   │   ├── meetup_service.dart        Ranking engine (the core algorithm)
-│   │   └── grab_maps_client.dart      Grab API HTTP client + in-memory cache
-│   └── Dockerfile
-└── .github/workflows/
-    └── deploy.yml                     CI/CD → GitHub Pages
-```
-
-<br/>
-
-## 🛣️ What's Next
-
-- [ ] Enable route line visualisation on the map (already coded — flip `_showRouteLines`)
-- [ ] Shareable result URLs (encode group state into query params)
-- [ ] Additional ranking modes: Pure Fairness / Nobody Suffers / Fastest Total
-- [ ] Time-of-day routing (Friday 7 PM traffic awareness)
-- [ ] Friend name labels instead of A/B/C
+- [ ] Route lines drawn on the map per friend (already built — one flag to enable)
+- [ ] Shareable result links so the whole group can see the same view
+- [ ] Multiple ranking modes: Pure Fairness · Nobody Suffers · Fastest Total
+- [ ] Traffic-aware routing for peak hours (Friday 7 PM, etc.)
 - [ ] Ride cost fairness using Grab fare estimates
-- [ ] Public transit mode
-- [ ] Real-time multi-user collaboration via WebSockets
+- [ ] Real-time multi-user mode — each friend places their own pin from their own phone
 
 <br/>
 
-## 🧰 Tech Stack
+## 🧰 Built With
 
-`Flutter Web` · `Dart/Shelf` · `MapLibre GL JS 3.6.2` · `Grab Maps SDK` · `Dio` · `Docker` · `Render.com` · `GitHub Pages` · `GitHub Actions`
+`Flutter Web` · `Dart / Shelf` · `MapLibre GL JS` · `Grab Maps SDK` · `Docker` · `GitHub Actions`
 
 <br/>
 
 ---
 
-Built with ❤️ for the **Grab Maps Hackathon 2026** by [Prakhar Nagpal](https://github.com/PrakharNagpal)
-
-**Live demo →** https://prakharnagpal.github.io/Grab_Maps_Hacakthon/
+Built for the **Grab Maps Hackathon 2026** by [Prakhar Nagpal](https://github.com/PrakharNagpal)
