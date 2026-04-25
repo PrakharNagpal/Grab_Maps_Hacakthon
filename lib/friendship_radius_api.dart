@@ -10,7 +10,7 @@ class FriendshipRadiusApi {
                 baseUrl: baseUrl ??
                     const String.fromEnvironment(
                       'FRIENDSHIP_RADIUS_API_BASE_URL',
-                      defaultValue: 'http://127.0.0.1:8080',
+                      defaultValue: 'https://grab-maps-hacakthon.onrender.com',
                     ),
                 connectTimeout: const Duration(seconds: 8),
                 receiveTimeout: const Duration(seconds: 20),

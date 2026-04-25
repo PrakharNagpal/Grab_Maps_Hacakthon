@@ -1,0 +1,45 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Build Flutter web
+        run: |
+          flutter pub get
+          flutter build web --release \
+            --base-href /Grab_Maps_Hacakthon/ \
+            --dart-define=GRAB_MAPS_BROWSER_KEY=${{ secrets.GRAB_MAPS_BROWSER_KEY }} \
+            --dart-define=FRIENDSHIP_RADIUS_API_BASE_URL=https://grab-maps-hacakthon.onrender.com
+
+      - uses: actions/configure-pages@v4
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: build/web
+
+      - id: deployment
+        uses: actions/deploy-pages@v4
