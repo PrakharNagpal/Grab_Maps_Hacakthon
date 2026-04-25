@@ -1370,7 +1370,7 @@ class _MapScreenState extends State<MapScreen> {
                         ),
                         const SizedBox(height: 8),
                         Text(
-                          'A left-rail meetup studio with the map acting as the live stage.',
+                          'A meetup studio with the map acting as the live stage.',
                           style: theme.textTheme.bodyLarge?.copyWith(
                             color: const Color(0xFFD1FAE5),
                             height: 1.35,
