@@ -81252,7 +81252,7 @@ n=o.e
 n=A.b2("Equal Miles",a8,a8,a8,n==null?a8:n.agI(B.i,B.hf,1.02),a8,a8)
 m=o.y
 l=t.p
-m=A.c0(a8,A.cm(A.c([p,B.c3,n,B.dR,A.b2("A left-rail meetup studio with the map acting as the live stage.",a8,a8,a8,m==null?a8:m.RT(B.iZ,1.35),a8,a8)],l),B.W,B.z),B.p,a8,B.Ap,a8,a8,a8,B.Ed,a8,a8,1/0)
+m=A.c0(a8,A.cm(A.c([p,B.c3,n,B.dR,A.b2("A meetup studio with the map acting as the live stage.",a8,a8,a8,m==null?a8:m.RT(B.iZ,1.35),a8,a8)],l),B.W,B.z),B.p,a8,B.Ap,a8,a8,a8,B.Ed,a8,a8,1/0)
 n=a7.fr
 p=a7.at
 k=a7.fx
