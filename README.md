@@ -6,7 +6,7 @@ Equal Miles finds the meeting spot that nobody can complain about — because it
 
 <br/>
 
-![Equal Miles Banner](flutter_01.png)
+![Equal Miles — Friends on the map](assets/Screenshot%202026-04-25%20at%201.29.25%20PM.png)
 
 <br/>
 
@@ -55,6 +55,10 @@ blended_score =
 The venue with the **lowest blended score** wins. Ties are broken by unfairness gap → worst trip → centroid distance → total trip time.
 
 > Walking mode uses a stricter `1/18` distance weight and caps the search radius at 4 km automatically.
+
+<br/>
+
+![Equal Miles — Fairness results](assets/Screenshot%202026-04-25%20at%201.33.32%20PM.png)
 
 <br/>
 
