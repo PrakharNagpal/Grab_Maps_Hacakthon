@@ -3,6 +3,8 @@ services:
     name: equal-miles-api
     runtime: docker
     rootDir: server
+    dockerfilePath: ./server/Dockerfile
+    dockerContext: ./server
     plan: free
     autoDeploy: true
     envVars:
